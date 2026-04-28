@@ -1,18 +1,21 @@
 package com.project.phm.service;
 
 import com.opencsv.CSVReader;
+import com.project.phm.entity.ProcessingTask;
 import com.project.phm.utils.CsvUtils;
+import com.project.phm.utils.DataValidationUtils;
 import com.project.phm.utils.DbUtils;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.ByteArrayInputStream;
 import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 异步CSV处理服务
@@ -21,131 +24,145 @@ import java.util.Map;
 public class AsyncCsvService {
 
     private final DbUtils dbUtils;
-    private final TaskManager taskManager;
+    private final DataValidationUtils validationUtils;
+    private final ConcurrentHashMap<String, ProcessingTask> taskMap = new ConcurrentHashMap<>();
 
-    public AsyncCsvService(DbUtils dbUtils, TaskManager taskManager) {
+    public AsyncCsvService(DbUtils dbUtils, DataValidationUtils validationUtils) {
         this.dbUtils = dbUtils;
-        this.taskManager = taskManager;
+        this.validationUtils = validationUtils;
+    }
+
+    /**
+     * 创建处理任务
+     */
+    public String createProcessingTask(MultipartFile file, String tableName, int expectedRows) throws Exception {
+        String taskId = UUID.randomUUID().toString();
+        
+        ProcessingTask task = new ProcessingTask();
+        task.setTaskId(taskId);
+        task.setFileName(file.getOriginalFilename());
+        task.setTableName(tableName);
+        task.setExpectedRows(expectedRows);
+        task.setStatus("PENDING");
+        taskMap.put(taskId, task);
+
+        // 立即开始处理
+        processCsvAsync(file, tableName, taskId);
+
+        return taskId;
     }
 
     /**
      * 异步处理CSV上传
-     * @param fileBytes 文件字节数组（提前读取，避免临时文件被清理）
-     * @param fileName 文件名
-     * @param tableName 表名
-     * @param taskId 任务ID
      */
     @Async
-    public void processCsvAsync(byte[] fileBytes, String fileName, String tableName, String taskId) {
+    public void processCsvAsync(MultipartFile file, String tableName, String taskId) {
+        ProcessingTask task = taskMap.get(taskId);
+        if (task == null) {
+            return;
+        }
+
         try {
-            // 先统计总行数
-            int totalRows = countRows(fileBytes);
-            taskManager.setTotalRows(taskId, totalRows);
+            task.setStatus("PROCESSING");
+            task.setStartTime(System.currentTimeMillis());
 
-            // 流式解析并处理
-            processCsvStream(fileBytes, tableName, taskId);
+            // 流式解析CSV
+            List<String> columns = new ArrayList<>();
+            List<String[]> dataRows = new ArrayList<>();
+            List<String[]> fullData = new ArrayList<>();
+            boolean firstRow = true;
 
-        } catch (Exception e) {
-            taskManager.failTask(taskId, "处理失败: " + e.getMessage());
-        }
-    }
-
-    /**
-     * 统计CSV文件总行数
-     */
-    private int countRows(byte[] fileBytes) throws Exception {
-        try (CSVReader reader = new CSVReader(new InputStreamReader(new ByteArrayInputStream(fileBytes), "UTF-8"))) {
-            int count = 0;
-            while (reader.readNext() != null) {
-                count++;
-            }
-            return Math.max(0, count - 1); // 减去表头
-        }
-    }
-
-    /**
-     * 流式处理CSV
-     */
-    private void processCsvStream(byte[] fileBytes, String tableName, String taskId) throws Exception {
-        List<String> columns = new ArrayList<>();
-        List<String[]> batch = new ArrayList<>();
-        int batchSize = 1000;
-        int processedRows = 0;
-        int successRows = 0;
-        int failedRows = 0;
-        boolean firstRow = true;
-
-        try (CSVReader reader = new CSVReader(new InputStreamReader(new ByteArrayInputStream(fileBytes), "UTF-8"))) {
-
-            String[] row;
-            while ((row = reader.readNext()) != null) {
-                // 处理表头
-                if (firstRow) {
-                    for (String columnName : row) {
-                        columns.add(CsvUtils.processColumnName(columnName));
+            try (CSVReader reader = new CSVReader(new InputStreamReader(file.getInputStream(), "UTF-8"))) {
+                String[] row;
+                while ((row = reader.readNext()) != null) {
+                    if (firstRow) {
+                        for (String columnName : row) {
+                            columns.add(CsvUtils.processColumnName(columnName));
+                        }
+                        fullData.add(columns.toArray(new String[0]));
+                        firstRow = false;
+                    } else {
+                        dataRows.add(row);
+                        fullData.add(row);
                     }
-                    // 创建表
-                    dbUtils.createTable(tableName, columns);
-                    firstRow = false;
-                    continue;
-                }
-
-                // 收集数据行
-                batch.add(row);
-                processedRows++;
-
-                // 达到批量大小，执行插入
-                if (batch.size() >= batchSize) {
-                    int inserted = dbUtils.batchInsert(tableName, columns, batch);
-                    successRows += inserted;
-                    failedRows += (batch.size() - inserted);
-                    batch.clear();
-
-                    // 更新进度
-                    taskManager.updateProgress(taskId, processedRows, successRows, failedRows);
                 }
             }
 
-            // 处理剩余的数据
-            if (!batch.isEmpty()) {
+            // 计算原始数据哈希并保存（用于后续导出校验）
+            String originalDataHash = validationUtils.calculateDataHash(fullData);
+            dbUtils.saveTableMetadata(tableName, "original_data_hash", originalDataHash);
+            dbUtils.saveTableMetadata(tableName, "original_row_count", String.valueOf(dataRows.size()));
+
+            // 检查是否需要建表
+            if (!dbUtils.tableExists(tableName)) {
+                dbUtils.createTable(tableName, columns);
+            } else {
+                // 表已存在，先清空表数据（避免重复）
+                dbUtils.truncateTable(tableName);
+            }
+
+            // 批量入库（分批处理，每批更新进度）
+            int batchSize = 1000;
+            int processedRows = 0;
+            int successRows = 0;
+
+            for (int i = 0; i < dataRows.size(); i += batchSize) {
+                int end = Math.min(i + batchSize, dataRows.size());
+                List<String[]> batch = dataRows.subList(i, end);
+                
                 int inserted = dbUtils.batchInsert(tableName, columns, batch);
                 successRows += inserted;
-                failedRows += (batch.size() - inserted);
-                taskManager.updateProgress(taskId, processedRows, successRows, failedRows);
+                processedRows = end;
+                
+                // 更新进度
+                task.setProcessedRows(processedRows);
+                task.setSuccessRows(successRows);
+                task.setProgress((int) (processedRows * 100.0 / task.getExpectedRows()));
             }
 
-            // 任务完成
-            taskManager.completeTask(taskId, 
-                String.format("上传成功！总条数：%d，成功：%d，失败：%d", 
-                    processedRows, successRows, failedRows));
+            // 存储阶段校验
+            Map<String, Object> storageValidation = validationUtils.validateStorage(
+                task.getExpectedRows(), successRows
+            );
+            
+            task.setStorageValidation(storageValidation);
+            task.setEndTime(System.currentTimeMillis());
+            task.setStatus("COMPLETED");
+            task.setMessage("处理完成");
 
         } catch (Exception e) {
-            throw e;
+            task.setStatus("FAILED");
+            task.setMessage("处理失败: " + e.getMessage());
+            task.setEndTime(System.currentTimeMillis());
         }
     }
 
     /**
      * 获取任务状态
-     * @param taskId 任务ID
-     * @return 任务状态
      */
     public Map<String, Object> getTaskStatus(String taskId) {
-        Map<String, Object> result = new HashMap<>();
-        com.project.phm.entity.UploadTask task = taskManager.getTask(taskId);
+        ProcessingTask task = taskMap.get(taskId);
         if (task == null) {
-            result.put("error", "任务不存在");
-            return result;
+            throw new IllegalArgumentException("任务不存在");
         }
+
+        Map<String, Object> result = new HashMap<>();
         result.put("taskId", task.getTaskId());
         result.put("fileName", task.getFileName());
         result.put("tableName", task.getTableName());
         result.put("status", task.getStatus());
         result.put("progress", task.getProgress());
-        result.put("totalRows", task.getTotalRows());
+        result.put("expectedRows", task.getExpectedRows());
         result.put("processedRows", task.getProcessedRows());
         result.put("successRows", task.getSuccessRows());
-        result.put("failedRows", task.getFailedRows());
+        result.put("storageValidation", task.getStorageValidation());
         result.put("message", task.getMessage());
+        
+        // 计算处理时间
+        if (task.getEndTime() > 0 && task.getStartTime() > 0) {
+            result.put("processingTime", task.getEndTime() - task.getStartTime());
+        }
+        
         return result;
     }
 }

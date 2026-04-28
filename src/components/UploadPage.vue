@@ -3,321 +3,451 @@
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>上传CSV文件</span>
+          <span>上传CSV文件 - 数据一致性校验</span>
         </div>
       </template>
-      
-      <el-form :model="form" label-width="80px" class="upload-form">
-        <el-form-item label="选择文件">
-          <el-upload
-            class="upload-demo"
-            :auto-upload="false"
-            :on-change="handleFileChange"
-            :limit="1"
-            :file-list="fileList"
-            accept=".csv"
+
+      <!-- 步骤1: 选择文件和表名 -->
+      <div class="step-section">
+        <div class="step-title">
+          <el-tag :type="currentStep >= 1 ? 'primary' : 'info'" size="large">步骤1</el-tag>
+          选择CSV文件
+        </div>
+        <el-upload
+          class="upload-demo"
+          drag
+          :auto-upload="false"
+          :on-change="handleFileSelect"
+          :limit="1"
+          accept=".csv"
+        >
+          <el-icon class="el-icon--upload"><upload-filled /></el-icon>
+          <div class="el-upload__text">
+            将文件拖到此处，或<em>点击上传</em>
+          </div>
+          <template #tip>
+            <div class="el-upload__tip">
+              支持UTF-8编码的CSV文件
+            </div>
+          </template>
+        </el-upload>
+      </div>
+
+      <!-- 表名输入 -->
+      <div class="step-section" v-if="selectedFile">
+        <el-form :model="form" label-width="80px">
+          <el-form-item 
+            label="表名" 
+            :rules="[{ required: true, message: '请输入表名', trigger: 'blur' }, { pattern: /^csv_/i, message: '表名必须以csv_开头', trigger: 'blur' }]"
+            prop="tableName"
           >
-            <el-button type="primary">
-              <el-icon><Upload /></el-icon>
-              选择CSV文件
-            </el-button>
-            <template #tip>
-              <div class="el-upload__tip">
-                请选择UTF-8编码的CSV文件，首行为列名
-              </div>
-            </template>
-          </el-upload>
-        </el-form-item>
-        
-        <el-form-item label="表名" prop="tableName" :rules="[{ required: true, message: '请输入表名', trigger: 'blur' }, { pattern: /^csv_/i, message: '表名必须以csv_开头', trigger: 'blur' }]">
-          <el-input v-model="form.tableName" placeholder="请输入表名，如 csv_user" />
-        </el-form-item>
-        
-        <el-form-item>
-          <el-button 
-            type="primary" 
-            @click="handleUpload" 
-            :loading="uploading"
-            :disabled="!canUpload"
-          >
-            {{ uploading ? '上传中...' : '上传并入库' }}
-          </el-button>
-        </el-form-item>
-      </el-form>
-      
-      <!-- 上传进度显示 -->
-      <div v-if="showProgress" class="progress-section">
-        <div class="progress-info">
-          <span class="status-badge" :class="statusClass">{{ statusText }}</span>
+            <el-input 
+              v-model="form.tableName" 
+              placeholder="请输入表名，如 csv_user" 
+              style="width: 300px"
+            />
+          </el-form-item>
+        </el-form>
+      </div>
+
+      <!-- 操作按钮 -->
+      <div class="action-buttons">
+        <el-button 
+          type="primary" 
+          size="large"
+          @click="handleUploadAndProcess" 
+          :loading="processing"
+          :disabled="!selectedFile || !form.tableName"
+        >
+          开始上传并校验
+        </el-button>
+      </div>
+
+      <!-- 步骤2: 上传预览和校验 -->
+      <div class="step-section" v-if="previewResult">
+        <div class="step-title">
+          <el-tag :type="currentStep >= 2 ? 'primary' : 'info'" size="large">步骤2</el-tag>
+          数据校验预览
         </div>
         
-        <el-progress 
-          :percentage="progressPercent" 
-          :status="progressStatus"
-          style="margin-top: 10px"
-        />
-        
-        <div class="progress-stats" v-if="taskInfo">
-          <el-row :gutter="20">
-            <el-col :span="6">
-              <div class="stat-item">
-                <div class="stat-label">总条数</div>
-                <div class="stat-value">{{ taskInfo.totalRows }}</div>
-              </div>
-            </el-col>
-            <el-col :span="6">
-              <div class="stat-item">
-                <div class="stat-label">已处理</div>
-                <div class="stat-value">{{ taskInfo.processedRows }}</div>
-              </div>
-            </el-col>
-            <el-col :span="6">
-              <div class="stat-item">
-                <div class="stat-label">成功</div>
-                <div class="stat-value success">{{ taskInfo.successRows }}</div>
-              </div>
-            </el-col>
-            <el-col :span="6">
-              <div class="stat-item">
-                <div class="stat-label">失败</div>
-                <div class="stat-value error">{{ taskInfo.failedRows }}</div>
-              </div>
-            </el-col>
-          </el-row>
+        <!-- 校验结果统计卡片 -->
+        <el-row :gutter="20" class="stats-row">
+          <el-col :span="6">
+            <div class="stat-card total">
+              <div class="stat-value">{{ previewResult.totalRows }}</div>
+              <div class="stat-label">总数据行数</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="stat-card valid">
+              <div class="stat-value">{{ previewResult.validRows }}</div>
+              <div class="stat-label">有效行数</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="stat-card invalid">
+              <div class="stat-value">{{ previewResult.invalidRows }}</div>
+              <div class="stat-label">无效/空行</div>
+            </div>
+          </el-col>
+          <el-col :span="6">
+            <div class="stat-card columns">
+              <div class="stat-value">{{ previewResult.columns.length }}</div>
+              <div class="stat-label">列数</div>
+            </div>
+          </el-col>
+        </el-row>
+
+        <!-- 警告信息 -->
+        <el-alert
+          v-if="previewResult.warnings && previewResult.warnings.length > 0"
+          title="警告信息"
+          type="warning"
+          :closable="false"
+          show-icon
+          class="validation-alert"
+        >
+          <ul>
+            <li v-for="(warning, idx) in previewResult.warnings" :key="idx">{{ warning }}</li>
+          </ul>
+        </el-alert>
+
+        <!-- 列信息 -->
+        <div class="columns-section">
+          <h4>列名信息</h4>
+          <el-tag 
+            v-for="(col, idx) in previewResult.columns" 
+            :key="idx"
+            style="margin: 5px"
+          >{{ col }}</el-tag>
+        </div>
+
+        <!-- 数据预览表格 -->
+        <div class="preview-section">
+          <h4>数据预览（前5行）</h4>
+          <el-table :data="previewResult.sampleData" border stripe style="width: 100%">
+            <el-table-column
+              v-for="(col, colIdx) in previewResult.columns"
+              :key="colIdx"
+              :prop="String(colIdx)"
+              :label="col"
+            />
+          </el-table>
         </div>
       </div>
-      
-      <el-alert
-        v-if="result.show"
-        :title="result.message"
-        :type="result.type"
-        show-icon
-        class="result-alert"
-      />
+
+      <!-- 步骤3: 处理进度和存储校验 -->
+      <div class="step-section" v-if="currentStep >= 3">
+        <div class="step-title">
+          <el-tag :type="currentStep >= 3 ? 'primary' : 'info'" size="large">步骤3</el-tag>
+          处理进度 & 存储校验
+        </div>
+
+        <!-- 进度条 -->
+        <el-progress 
+          :percentage="taskStatus.progress" 
+          :status="progressStatus"
+          style="margin: 20px 0"
+        >
+          <template #default="{ percentage }">
+            <span class="percentage-value">{{ percentage }}%</span>
+          </template>
+        </el-progress>
+
+        <!-- 处理统计 -->
+        <el-row :gutter="20" v-if="taskStatus.status === 'COMPLETED'">
+          <el-col :span="8">
+            <div class="stat-card process">
+              <div class="stat-value">{{ taskStatus.processedRows }}</div>
+              <div class="stat-label">已处理</div>
+            </div>
+          </el-col>
+          <el-col :span="8">
+            <div class="stat-card success">
+              <div class="stat-value">{{ taskStatus.successRows }}</div>
+              <div class="stat-label">成功入库</div>
+            </div>
+          </el-col>
+          <el-col :span="8">
+            <div class="stat-card time">
+              <div class="stat-value">{{ formatDuration(taskStatus.processingTime) }}</div>
+              <div class="stat-label">处理时间</div>
+            </div>
+          </el-col>
+        </el-row>
+
+        <!-- 存储校验结果 -->
+        <div v-if="taskStatus.storageValidation" class="validation-result">
+          <el-alert
+            :title="taskStatus.storageValidation.message"
+            :type="validationType"
+            :closable="false"
+            show-icon
+          >
+            <template #default>
+              <div class="validation-details">
+                <span>预期行数: <strong>{{ taskStatus.storageValidation.expectedRows }}</strong></span>
+                <span>实际入库: <strong>{{ taskStatus.storageValidation.actualRows }}</strong></span>
+                <span>差异: <strong>{{ taskStatus.storageValidation.diffRows }}</strong></span>
+                <span>一致性: <strong>{{ taskStatus.storageValidation.isConsistent ? '✓一致' : '✗不一致' }}</strong></span>
+              </div>
+            </template>
+          </el-alert>
+        </div>
+
+        <!-- 成功消息 -->
+        <el-alert
+          v-if="taskStatus.status === 'COMPLETED'"
+          title="数据导入完成！"
+          type="success"
+          show-icon
+          style="margin-top: 20px"
+        />
+      </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, onUnmounted } from 'vue'
-import { Upload } from '@element-plus/icons-vue'
+import { ref, reactive, computed, watch } from 'vue'
+import { UploadFilled } from '@element-plus/icons-vue'
 import axios from 'axios'
+
+const selectedFile = ref(null)
+const processing = ref(false)
+const currentStep = ref(1)
+const previewResult = ref(null)
+const taskStatus = ref({
+  progress: 0,
+  status: 'PENDING'
+})
+const pollTimer = ref(null)
 
 const form = reactive({
   tableName: ''
 })
 
-const fileList = ref([])
-const uploading = ref(false)
-const showProgress = ref(false)
-const progressPercent = ref(0)
-const progressStatus = ref('') // '', 'success', 'exception', 'warning'
-const currentTaskId = ref('')
-const pollInterval = ref(null)
-const taskInfo = ref(null)
-
-const result = reactive({
-  show: false,
-  message: '',
-  type: 'success'
-})
-
-const canUpload = computed(() => {
-  return fileList.value.length > 0 && form.tableName && form.tableName.toLowerCase().startsWith('csv_') && !uploading.value
-})
-
-const statusClass = computed(() => {
-  if (!taskInfo.value) return 'pending'
-  switch (taskInfo.value.status) {
-    case 'PENDING': return 'pending'
-    case 'PROCESSING': return 'processing'
-    case 'COMPLETED': return 'success'
-    case 'FAILED': return 'error'
-    default: return 'pending'
+const progressStatus = computed(() => {
+  if (taskStatus.value.status === 'COMPLETED') {
+    return taskStatus.value.storageValidation?.isConsistent ? 'success' : 'warning'
   }
+  if (taskStatus.value.status === 'FAILED') return 'exception'
+  return null
 })
 
-const statusText = computed(() => {
-  if (!taskInfo.value) return '等待中'
-  switch (taskInfo.value.status) {
-    case 'PENDING': return '等待处理'
-    case 'PROCESSING': return '正在处理'
-    case 'COMPLETED': return '处理完成'
-    case 'FAILED': return '处理失败'
-    default: return '等待中'
-  }
+const validationType = computed(() => {
+  if (!taskStatus.value.storageValidation) return 'info'
+  return taskStatus.value.storageValidation.isConsistent ? 'success' : 'warning'
 })
 
-const handleFileChange = (file) => {
-  fileList.value = [file]
-}
+// 选择文件
+const handleFileSelect = async (file) => {
+  selectedFile.value = file
+  previewResult.value = null
+  currentStep.value = 1
 
-const pollTaskStatus = async () => {
-  if (!currentTaskId.value) return
-  
+  // 开始预览校验
   try {
-    const response = await axios.get('/api/csv/task-status', {
-      params: { taskId: currentTaskId.value }
-    })
-    taskInfo.value = response.data
-    progressPercent.value = response.data.progress || 0
+    const formData = new FormData()
+    formData.append('file', file.raw)
     
-    // 更新进度条状态
-    if (response.data.status === 'COMPLETED') {
-      progressStatus.value = 'success'
-      result.show = true
-      result.message = response.data.message || '上传成功！'
-      result.type = 'success'
-      stopPolling()
-      uploading.value = false
-    } else if (response.data.status === 'FAILED') {
-      progressStatus.value = 'exception'
-      result.show = true
-      result.message = response.data.message || '上传失败'
-      result.type = 'error'
-      stopPolling()
-      uploading.value = false
-    }
+    const response = await axios.post('/api/csv/preview', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data'
+      }
+    })
+    previewResult.value = response.data
+    currentStep.value = 2
   } catch (error) {
-    console.error('查询任务状态失败', error)
+    console.error('预览失败:', error)
   }
 }
 
-const stopPolling = () => {
-  if (pollInterval.value) {
-    clearInterval(pollInterval.value)
-    pollInterval.value = null
-  }
-}
-
-const handleUpload = async () => {
-  if (fileList.value.length === 0) {
-    result.show = true
-    result.message = '请选择CSV文件'
-    result.type = 'warning'
-    return
-  }
-
-  const formData = new FormData()
-  formData.append('file', fileList.value[0].raw)
-  formData.append('tableName', form.tableName)
-
-  uploading.value = true
-  showProgress.value = true
-  progressPercent.value = 0
-  progressStatus.value = ''
-  result.show = false
+// 上传并处理
+const handleUploadAndProcess = async () => {
+  processing.value = true
+  currentStep.value = 3
 
   try {
+    const formData = new FormData()
+    formData.append('file', selectedFile.value.raw)
+    formData.append('tableName', form.tableName)
+
     const response = await axios.post('/api/csv/upload-async', formData, {
       headers: {
         'Content-Type': 'multipart/form-data'
       }
     })
 
-    currentTaskId.value = response.data.taskId
+    const taskId = response.data.taskId
     
-    // 开始轮询任务状态
-    pollInterval.value = setInterval(pollTaskStatus, 1000)
-    
+    // 开始轮询状态
+    startPolling(taskId)
+
   } catch (error) {
-    uploading.value = false
-    progressStatus.value = 'exception'
-    result.show = true
-    result.message = error.response?.data?.error || '上传失败，请重试'
-    result.type = 'error'
+    processing.value = false
   }
 }
 
-onUnmounted(() => {
-  stopPolling()
+// 轮询任务状态
+const startPolling = (taskId) => {
+  pollTimer.value = setInterval(async () => {
+    try {
+      const response = await axios.get('/api/csv/task-status', {
+        params: { taskId }
+      })
+      taskStatus.value = response.data
+
+      if (['COMPLETED', 'FAILED'].includes(response.data.status)) {
+        clearInterval(pollTimer.value)
+        processing.value = false
+      }
+    } catch (error) {
+      console.error('查询状态失败:', error)
+    }
+  }, 500)
+}
+
+// 格式化时间
+const formatDuration = (ms) => {
+  if (!ms) return '0s'
+  const seconds = Math.floor(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
+}
+
+watch(() => currentStep.value, () => {
+  // 清理定时器
+  if (currentStep.value < 3 && pollTimer.value) {
+    clearInterval(pollTimer.value)
+  }
 })
 </script>
 
 <style scoped>
 .upload-page {
-  max-width: 800px;
+  max-width: 1200px;
   margin: 0 auto;
 }
 
 .card-header {
-  font-size: 18px;
+  font-size: 20px;
   font-weight: bold;
 }
 
-.upload-form {
-  margin-top: 20px;
-}
-
-.progress-section {
-  margin-top: 20px;
+.step-section {
+  margin-top: 30px;
   padding: 20px;
   background-color: #f5f7fa;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 
-.progress-info {
-  margin-bottom: 10px;
-}
-
-.status-badge {
-  display: inline-block;
-  padding: 4px 12px;
-  border-radius: 10px;
-  font-size: 14px;
+.step-title {
+  font-size: 16px;
   font-weight: bold;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
-.status-badge.pending {
-  background-color: #e6a23c;
-  color: white;
+.stats-row {
+  margin-bottom: 20px;
 }
 
-.status-badge.processing {
-  background-color: #409eff;
-  color: white;
-}
-
-.status-badge.success {
-  background-color: #67c23a;
-  color: white;
-}
-
-.status-badge.error {
-  background-color: #f56c6c;
-  color: white;
-}
-
-.progress-stats {
-  margin-top: 20px;
-}
-
-.stat-item {
+.stat-card {
+  padding: 20px;
+  border-radius: 8px;
   text-align: center;
-  padding: 10px;
+  color: white;
+}
+
+.stat-card.total {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.stat-card.valid {
+  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
+}
+
+.stat-card.invalid {
+  background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
+}
+
+.stat-card.columns {
+  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+}
+
+.stat-card.process {
+  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+}
+
+.stat-card.success {
+  background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
+}
+
+.stat-card.time {
+  background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
+}
+
+.stat-value {
+  font-size: 32px;
+  font-weight: bold;
 }
 
 .stat-label {
   font-size: 14px;
-  color: #909399;
-  margin-bottom: 5px;
+  opacity: 0.9;
+  margin-top: 5px;
 }
 
-.stat-value {
-  font-size: 24px;
+.validation-alert {
+  margin-bottom: 20px;
+}
+
+.columns-section {
+  margin: 20px 0;
+}
+
+.columns-section h4 {
+  margin-bottom: 10px;
+}
+
+.preview-section {
+  margin: 20px 0;
+}
+
+.preview-section h4 {
+  margin-bottom: 10px;
+}
+
+.action-buttons {
+  margin-top: 30px;
+  text-align: center;
+}
+
+.validation-result {
+  margin: 20px 0;
+}
+
+.validation-details {
+  display: flex;
+  gap: 30px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+
+.validation-details span {
+  font-size: 14px;
+}
+
+.percentage-value {
+  font-size: 18px;
   font-weight: bold;
-  color: #303133;
+  color: #409eff;
 }
 
-.stat-value.success {
-  color: #67c23a;
-}
-
-.stat-value.error {
-  color: #f56c6c;
-}
-
-.result-alert {
-  margin-top: 20px;
+.upload-demo {
+  margin-top: 10px;
 }
 </style>

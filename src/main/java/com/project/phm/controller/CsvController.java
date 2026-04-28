@@ -1,19 +1,17 @@
 package com.project.phm.controller;
 
-import com.opencsv.exceptions.CsvException;
+import com.project.phm.entity.ValidationResult;
 import com.project.phm.service.AsyncCsvService;
 import com.project.phm.service.CsvService;
-import com.project.phm.service.TaskManager;
-import com.project.phm.utils.CsvUtils;
+import com.project.phm.utils.DataValidationUtils;
+import com.project.phm.utils.DbUtils;
 import org.springframework.http.HttpHeaders;
-import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,12 +25,15 @@ public class CsvController {
 
     private final CsvService csvService;
     private final AsyncCsvService asyncCsvService;
-    private final TaskManager taskManager;
+    private final DataValidationUtils validationUtils;
+    private final DbUtils dbUtils;
 
-    public CsvController(CsvService csvService, AsyncCsvService asyncCsvService, TaskManager taskManager) {
+    public CsvController(CsvService csvService, AsyncCsvService asyncCsvService, 
+                        DataValidationUtils validationUtils, DbUtils dbUtils) {
         this.csvService = csvService;
         this.asyncCsvService = asyncCsvService;
-        this.taskManager = taskManager;
+        this.validationUtils = validationUtils;
+        this.dbUtils = dbUtils;
     }
 
     /**
@@ -47,7 +48,24 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "获取表列表失败");
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
+        }
+    }
+
+    /**
+     * 上传预览校验（上传前校验）
+     * @param file CSV文件
+     * @return 校验结果
+     */
+    @PostMapping("/preview")
+    public ResponseEntity<?> previewCsv(@RequestParam("file") MultipartFile file) {
+        try {
+            ValidationResult result = validationUtils.validateUpload(file);
+            return ResponseEntity.ok(result);
+        } catch (Exception e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("error", "预览失败: " + e.getMessage());
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -58,34 +76,33 @@ public class CsvController {
      * @return 任务ID
      */
     @PostMapping("/upload-async")
-    public ResponseEntity<?> uploadCsvAsync(@RequestParam("file") MultipartFile file, @RequestParam("tableName") String tableName) {
+    public ResponseEntity<?> uploadCsvAsync(@RequestParam("file") MultipartFile file, 
+                                            @RequestParam("tableName") String tableName) {
         try {
-            // 验证表名
-            if (!CsvUtils.isValidTableName(tableName)) {
+            // 先校验
+            ValidationResult validationResult = validationUtils.validateUpload(file);
+            if (!validationResult.isValid()) {
                 Map<String, Object> error = new HashMap<>();
-                error.put("error", "表名必须以csv_开头");
+                error.put("error", "文件校验失败");
+                error.put("details", validationResult.getErrors());
                 return ResponseEntity.badRequest().body(error);
             }
 
-            // 关键：在请求线程中先把文件读入内存，避免临时文件被Spring清理
-            byte[] fileBytes = file.getBytes();
-            String fileName = file.getOriginalFilename();
-
             // 创建任务
-            String taskId = taskManager.createTask(fileName, tableName);
-
-            // 异步处理（传递字节数组而不是MultipartFile）
-            asyncCsvService.processCsvAsync(fileBytes, fileName, tableName, taskId);
+            String taskId = asyncCsvService.createProcessingTask(
+                file, tableName, validationResult.getValidRows()
+            );
 
             Map<String, Object> result = new HashMap<>();
             result.put("taskId", taskId);
             result.put("message", "文件已上传，正在后台处理中...");
+            result.put("validation", validationResult);
             return ResponseEntity.ok(result);
 
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "上传失败: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -96,7 +113,8 @@ public class CsvController {
      * @return 处理结果
      */
     @PostMapping("/upload")
-    public ResponseEntity<?> uploadCsv(@RequestParam("file") MultipartFile file, @RequestParam("tableName") String tableName) {
+    public ResponseEntity<?> uploadCsv(@RequestParam("file") MultipartFile file, 
+                                        @RequestParam("tableName") String tableName) {
         try {
             Map<String, Object> result = csvService.uploadCsv(file, tableName);
             return ResponseEntity.ok(result);
@@ -104,14 +122,10 @@ public class CsvController {
             Map<String, Object> error = new HashMap<>();
             error.put("error", e.getMessage());
             return ResponseEntity.badRequest().body(error);
-        } catch (IOException | CsvException e) {
-            Map<String, Object> error = new HashMap<>();
-            error.put("error", "文件解析失败: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "服务器内部错误: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -128,7 +142,7 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "查询任务状态失败: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -149,7 +163,7 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "服务器内部错误: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -161,10 +175,19 @@ public class CsvController {
      * @return 分页数据
      */
     @GetMapping("/page")
-    public ResponseEntity<?> pageData(@RequestParam("tableName") String tableName, @RequestParam("page") int page, @RequestParam("size") int size) {
+    public ResponseEntity<?> pageData(@RequestParam("tableName") String tableName, 
+                                      @RequestParam("page") int page, 
+                                      @RequestParam("size") int size) {
         try {
             Map<String, Object> data = csvService.pageData(tableName, page, size);
-            return ResponseEntity.ok(data);
+            
+            // 添加响应头，禁用缓存
+            HttpHeaders headers = new HttpHeaders();
+            headers.add("Cache-Control", "no-cache, no-store, must-revalidate");
+            headers.add("Pragma", "no-cache");
+            headers.add("Expires", "0");
+            
+            return ResponseEntity.ok().headers(headers).body(data);
         } catch (IllegalArgumentException e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", e.getMessage());
@@ -172,7 +195,7 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "服务器内部错误: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -183,7 +206,8 @@ public class CsvController {
      * @return 是否成功
      */
     @PostMapping("/delete")
-    public ResponseEntity<?> deleteData(@RequestParam("tableName") String tableName, @RequestParam("id") int id) {
+    public ResponseEntity<?> deleteData(@RequestParam("tableName") String tableName, 
+                                        @RequestParam("id") int id) {
         try {
             boolean success = csvService.deleteData(tableName, id);
             Map<String, Object> result = new HashMap<>();
@@ -196,7 +220,7 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "服务器内部错误: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -219,7 +243,7 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "服务器内部错误: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
@@ -242,33 +266,82 @@ public class CsvController {
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("error", "服务器内部错误: " + e.getMessage());
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(error);
+            return ResponseEntity.status(500).body(error);
         }
     }
 
     /**
-     * 导出表数据为CSV
+     * 导出表数据为CSV（包含完整数据一致性校验）
      * @param tableName 表名
      * @return CSV文件
      */
     @GetMapping("/export")
     public ResponseEntity<byte[]> exportCsv(@RequestParam("tableName") String tableName) {
         try {
-            List<String[]> data = csvService.exportCsv(tableName);
+            List<String[]> exportedData = csvService.exportCsv(tableName);
+            int actualRows = Math.max(0, exportedData.size() - 1);
+
+            // 获取原始数据的哈希和行数（上传时保存的）
+            String originalHash = dbUtils.getTableMetadata(tableName, "original_data_hash");
+            String originalRowCountStr = dbUtils.getTableMetadata(tableName, "original_row_count");
+
+            Map<String, Object> validation;
+
+            int displayOriginalRows;
+            int displayActualRows = actualRows;
+
+            if (originalHash != null && originalRowCountStr != null) {
+                // 有原始数据记录，进行完整的一致性校验
+                int originalRowCount = Integer.parseInt(originalRowCountStr);
+                displayOriginalRows = originalRowCount;
+                String exportedHash = validationUtils.calculateDataHash(exportedData);
+
+                validation = new HashMap<>();
+                validation.put("originalRows", originalRowCount);
+                validation.put("actualRows", actualRows);
+                validation.put("originalHash", originalHash);
+                validation.put("exportedHash", exportedHash);
+
+                if (originalRowCount != actualRows) {
+                    validation.put("isConsistent", false);
+                    validation.put("status", "error");
+                    validation.put("message", String.format("数据不一致：原始%d行，导出%d行（数据可能被修改过）", originalRowCount, actualRows));
+                } else if (originalHash.equals(exportedHash)) {
+                    validation.put("isConsistent", true);
+                    validation.put("status", "success");
+                    validation.put("message", "数据完全一致");
+                } else {
+                    validation.put("isConsistent", false);
+                    validation.put("status", "error");
+                    validation.put("message", "数据内容不一致（数据可能被修改过）");
+                }
+            } else {
+                // 没有原始数据记录，仅做行数校验
+                int expectedRows = dbUtils.getTotalCount(tableName);
+                displayOriginalRows = expectedRows;
+                validation = validationUtils.validateExport(expectedRows, actualRows);
+                validation.put("warning", "未找到原始数据记录，仅进行行数校验");
+            }
+
             ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-            CsvUtils.generateCsv(data, outputStream);
+            csvService.writeCsvToStream(exportedData, outputStream);
             byte[] csvBytes = outputStream.toByteArray();
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType("text/csv; charset=UTF-8"));
             headers.setContentDispositionFormData("attachment", tableName + ".csv");
             headers.setContentLength(csvBytes.length);
+            headers.set("X-Validation-Status", (String) validation.get("status"));
+            headers.set("X-Validation-Message", java.net.URLEncoder.encode((String) validation.get("message"), "UTF-8"));
+            headers.set("X-Is-Consistent", String.valueOf(validation.get("isConsistent")));
+            headers.set("X-Original-Rows", String.valueOf(displayOriginalRows));
+            headers.set("X-Actual-Rows", String.valueOf(displayActualRows));
 
-            return new ResponseEntity<>(csvBytes, headers, HttpStatus.OK);
+            return ResponseEntity.ok().headers(headers).body(csvBytes);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(null);
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
+            return ResponseEntity.status(500).body(null);
         }
     }
 }
