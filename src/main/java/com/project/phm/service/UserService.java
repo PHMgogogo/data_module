@@ -12,6 +12,6 @@ public class UserService {
     private UserMapper userMapper;
 
     public List<User> listUsers() {
-        return userMapper.listUsers();
+        return userMapper.selectList(null);
     }
 }

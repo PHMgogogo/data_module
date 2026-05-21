@@ -3,11 +3,11 @@
     <el-card shadow="hover">
       <template #header>
         <div class="card-header">
-          <span>上传CSV文件 - 数据一致性校验</span>
+          <span>上传CSV — 自动识别列属性并绑定飞机构型</span>
         </div>
       </template>
 
-      <!-- 步骤1: 选择文件和表名 -->
+      <!-- 步骤1: 选择文件 -->
       <div class="step-section">
         <div class="step-title">
           <el-tag :type="currentStep >= 1 ? 'primary' : 'info'" size="large">步骤1</el-tag>
@@ -22,432 +22,320 @@
           accept=".csv"
         >
           <el-icon class="el-icon--upload"><upload-filled /></el-icon>
-          <div class="el-upload__text">
-            将文件拖到此处，或<em>点击上传</em>
-          </div>
+          <div class="el-upload__text">将文件拖到此处，或<em>点击上传</em></div>
           <template #tip>
-            <div class="el-upload__tip">
-              支持UTF-8编码的CSV文件
-            </div>
+            <div class="el-upload__tip">支持UTF-8编码的CSV文件</div>
           </template>
         </el-upload>
       </div>
 
-      <!-- 表名输入 -->
-      <div class="step-section" v-if="selectedFile">
-        <el-form :model="form" label-width="80px">
-          <el-form-item 
-            label="表名" 
-            :rules="[{ required: true, message: '请输入表名', trigger: 'blur' }, { pattern: /^csv_/i, message: '表名必须以csv_开头', trigger: 'blur' }]"
-            prop="tableName"
-          >
-            <el-input 
-              v-model="form.tableName" 
-              placeholder="请输入表名，如 csv_user" 
-              style="width: 300px"
-            />
-          </el-form-item>
-        </el-form>
-      </div>
-
-      <!-- 操作按钮 -->
-      <div class="action-buttons">
-        <el-button 
-          type="primary" 
-          size="large"
-          @click="handleUploadAndProcess" 
-          :loading="processing"
-          :disabled="!selectedFile || !form.tableName"
-        >
-          开始上传并校验
-        </el-button>
-      </div>
-
-      <!-- 步骤2: 上传预览和校验 -->
-      <div class="step-section" v-if="previewResult">
+      <!-- 步骤2: 列属性分析结果 + 飞机构型关联 -->
+      <div class="step-section" v-if="analysisResult">
         <div class="step-title">
           <el-tag :type="currentStep >= 2 ? 'primary' : 'info'" size="large">步骤2</el-tag>
-          数据校验预览
+          列属性分析 & 飞机构型关联
         </div>
-        
-        <!-- 校验结果统计卡片 -->
+
+        <!-- 列类型统计 -->
         <el-row :gutter="20" class="stats-row">
           <el-col :span="6">
-            <div class="stat-card total">
-              <div class="stat-value">{{ previewResult.totalRows }}</div>
-              <div class="stat-label">总数据行数</div>
+            <div class="stat-card columns">
+              <div class="stat-value">{{ analysisResult.columns.length }}</div>
+              <div class="stat-label">总列数</div>
             </div>
           </el-col>
           <el-col :span="6">
             <div class="stat-card valid">
-              <div class="stat-value">{{ previewResult.validRows }}</div>
-              <div class="stat-label">有效行数</div>
+              <div class="stat-value">{{ analysisResult.numericColumns.length }}</div>
+              <div class="stat-label">数值列</div>
             </div>
           </el-col>
           <el-col :span="6">
-            <div class="stat-card invalid">
-              <div class="stat-value">{{ previewResult.invalidRows }}</div>
-              <div class="stat-label">无效/空行</div>
+            <div class="stat-card total">
+              <div class="stat-value">{{ analysisResult.textColumns.length }}</div>
+              <div class="stat-label">文本列</div>
             </div>
           </el-col>
           <el-col :span="6">
-            <div class="stat-card columns">
-              <div class="stat-value">{{ previewResult.columns.length }}</div>
-              <div class="stat-label">列数</div>
+            <div class="stat-card time">
+              <div class="stat-value">{{ analysisResult.totalRows }}</div>
+              <div class="stat-label">数据行数</div>
             </div>
           </el-col>
         </el-row>
 
-        <!-- 警告信息 -->
-        <el-alert
-          v-if="previewResult.warnings && previewResult.warnings.length > 0"
-          title="警告信息"
-          type="warning"
-          :closable="false"
-          show-icon
-          class="validation-alert"
-        >
-          <ul>
-            <li v-for="(warning, idx) in previewResult.warnings" :key="idx">{{ warning }}</li>
-          </ul>
-        </el-alert>
+        <!-- 列详细信息 -->
+        <el-table :data="columnTableData" border stripe size="small" style="width: 100%; margin-bottom: 20px" max-height="250">
+          <el-table-column prop="name" label="列名" width="180" />
+          <el-table-column prop="type" label="推断类型" width="120">
+            <template #default="scope">
+              <el-tag :type="scope.row.type === 'TEXT' ? 'info' : 'success'" size="small">{{ scope.row.type }}</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="timestampBadge" label="时间戳" width="100">
+            <template #default="scope">
+              <el-tag v-if="scope.row.isTimestamp" type="warning" size="small">时间列</el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column prop="sample" label="样本值" />
+        </el-table>
 
-        <!-- 列信息 -->
-        <div class="columns-section">
-          <h4>列名信息</h4>
-          <el-tag 
-            v-for="(col, idx) in previewResult.columns" 
-            :key="idx"
-            style="margin: 5px"
-          >{{ col }}</el-tag>
-        </div>
+        <!-- 飞机构型关联 -->
+        <el-divider content-position="left">飞机构型关联</el-divider>
+        <el-form :model="form" label-width="100px">
+          <el-row :gutter="10">
+            <el-col :span="8">
+              <el-form-item label="机型" required>
+                <el-select v-model="form.modelCode" style="width: 100%" @change="handleModelChange">
+                  <el-option v-for="m in models" :key="m.modelCode" :label="m.modelCode" :value="m.modelCode" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="机号" required>
+                <el-select v-model="form.tailNumber" style="width: 100%" :disabled="!form.modelCode" @change="handleTailChange">
+                  <el-option v-for="tn in tailNumbers" :key="tn" :label="tn" :value="tn" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+            <el-col :span="8">
+              <el-form-item label="数据类型">
+                <el-select v-model="form.dataType" style="width: 100%">
+                  <el-option label="原始数据 RAW" value="RAW" />
+                  <el-option label="诊断 DIAGNOSIS" value="DIAGNOSIS" />
+                  <el-option label="评价 EVALUATION" value="EVALUATION" />
+                  <el-option label="预测 PREDICTION" value="PREDICTION" />
+                </el-select>
+              </el-form-item>
+            </el-col>
+          </el-row>
+          <el-row :gutter="10" style="margin-top: 10px">
+            <el-col :span="12">
+              <el-form-item label="设备名">
+                <el-input v-model="form.tableName" placeholder="自动生成或手动输入（不含csv_前缀）" style="width: 100%">
+                  <template #prepend>csv_</template>
+                </el-input>
+              </el-form-item>
+            </el-col>
+            <el-col :span="12">
+              <el-form-item label="所属设备">
+                <el-tree-select
+                  v-model="form.parentItemId"
+                  :data="configTree"
+                  :props="{ label: 'label', value: 'itemId', children: 'children' }"
+                  placeholder="选择所属设备/系统"
+                  clearable
+                  filterable
+                  style="width: 100%"
+                />
+              </el-form-item>
+            </el-col>
+          </el-row>
+        </el-form>
 
-        <!-- 数据预览表格 -->
-        <div class="preview-section">
-          <h4>数据预览（前5行）</h4>
-          <el-table :data="previewResult.sampleData" border stripe style="width: 100%">
-            <el-table-column
-              v-for="(col, colIdx) in previewResult.columns"
-              :key="colIdx"
-              :prop="String(colIdx)"
-              :label="col"
-            />
-          </el-table>
+        <div style="text-align: center; margin-top: 20px">
+          <el-button type="primary" size="large" @click="handleUpload"
+            :loading="uploading" :disabled="!form.tailNumber || !form.tableName">
+            开始上传
+          </el-button>
         </div>
       </div>
 
-      <!-- 步骤3: 处理进度和存储校验 -->
-      <div class="step-section" v-if="currentStep >= 3">
+      <!-- 步骤3: 上传结果 -->
+      <div class="step-section" v-if="uploadResult">
         <div class="step-title">
-          <el-tag :type="currentStep >= 3 ? 'primary' : 'info'" size="large">步骤3</el-tag>
-          处理进度 & 存储校验
+          <el-tag type="success" size="large">✓</el-tag>
+          上传结果
         </div>
-
-        <!-- 进度条 -->
-        <el-progress 
-          :percentage="taskStatus.progress" 
-          :status="progressStatus"
-          style="margin: 20px 0"
-        >
-          <template #default="{ percentage }">
-            <span class="percentage-value">{{ percentage }}%</span>
-          </template>
-        </el-progress>
-
-        <!-- 处理统计 -->
-        <el-row :gutter="20" v-if="taskStatus.status === 'COMPLETED'">
-          <el-col :span="8">
-            <div class="stat-card process">
-              <div class="stat-value">{{ taskStatus.processedRows }}</div>
-              <div class="stat-label">已处理</div>
-            </div>
-          </el-col>
-          <el-col :span="8">
-            <div class="stat-card success">
-              <div class="stat-value">{{ taskStatus.successRows }}</div>
-              <div class="stat-label">成功入库</div>
-            </div>
-          </el-col>
-          <el-col :span="8">
-            <div class="stat-card time">
-              <div class="stat-value">{{ formatDuration(taskStatus.processingTime) }}</div>
-              <div class="stat-label">处理时间</div>
-            </div>
-          </el-col>
-        </el-row>
-
-        <!-- 存储校验结果 -->
-        <div v-if="taskStatus.storageValidation" class="validation-result">
-          <el-alert
-            :title="taskStatus.storageValidation.message"
-            :type="validationType"
-            :closable="false"
-            show-icon
-          >
-            <template #default>
-              <div class="validation-details">
-                <span>预期行数: <strong>{{ taskStatus.storageValidation.expectedRows }}</strong></span>
-                <span>实际入库: <strong>{{ taskStatus.storageValidation.actualRows }}</strong></span>
-                <span>差异: <strong>{{ taskStatus.storageValidation.diffRows }}</strong></span>
-                <span>一致性: <strong>{{ taskStatus.storageValidation.isConsistent ? '✓一致' : '✗不一致' }}</strong></span>
-              </div>
-            </template>
-          </el-alert>
-        </div>
-
-        <!-- 成功消息 -->
-        <el-alert
-          v-if="taskStatus.status === 'COMPLETED'"
-          title="数据导入完成！"
-          type="success"
-          show-icon
-          style="margin-top: 20px"
-        />
+        <el-alert title="数据已写入达梦数据库" type="success" show-icon style="margin-bottom: 20px" />
+        <el-descriptions :column="2" border>
+          <el-descriptions-item label="设备名">{{ uploadResult.deviceName || form.tableName }}</el-descriptions-item>
+          <el-descriptions-item label="机号">{{ uploadResult.tailNumber || form.tailNumber }}</el-descriptions-item>
+          <el-descriptions-item label="总行数">{{ uploadResult.totalCount }}</el-descriptions-item>
+          <el-descriptions-item label="成功导入">{{ uploadResult.successCount }}</el-descriptions-item>
+        </el-descriptions>
+        <el-button type="primary" style="margin-top: 20px" @click="resetForm">继续上传</el-button>
       </div>
     </el-card>
   </div>
 </template>
 
 <script setup>
-import { ref, reactive, computed, watch } from 'vue'
+import { ref, reactive } from 'vue'
 import { UploadFilled } from '@element-plus/icons-vue'
 import axios from 'axios'
 
 const selectedFile = ref(null)
-const processing = ref(false)
 const currentStep = ref(1)
-const previewResult = ref(null)
-const taskStatus = ref({
-  progress: 0,
-  status: 'PENDING'
-})
-const pollTimer = ref(null)
+const analysisResult = ref(null)
+const columnTableData = ref([])
+const uploading = ref(false)
+const uploadResult = ref(null)
+
+// 飞机构型数据
+const models = ref([])
+const tailNumbers = ref([])
+const configTree = ref([])
 
 const form = reactive({
-  tableName: ''
+  modelCode: '',
+  tailNumber: '',
+  tableName: '',
+  parentItemId: null,
+  dataType: 'RAW'
 })
 
-const progressStatus = computed(() => {
-  if (taskStatus.value.status === 'COMPLETED') {
-    return taskStatus.value.storageValidation?.isConsistent ? 'success' : 'warning'
-  }
-  if (taskStatus.value.status === 'FAILED') return 'exception'
-  return null
-})
-
-const validationType = computed(() => {
-  if (!taskStatus.value.storageValidation) return 'info'
-  return taskStatus.value.storageValidation.isConsistent ? 'success' : 'warning'
-})
-
-// 选择文件
+// 选择文件 → 分析列属性
 const handleFileSelect = async (file) => {
   selectedFile.value = file
-  previewResult.value = null
+  analysisResult.value = null
+  columnTableData.value = []
+  uploadResult.value = null
   currentStep.value = 1
 
-  // 开始预览校验
+  // 重置飞机表单
+  form.modelCode = ''
+  form.tailNumber = ''
+  form.tableName = ''
+  form.parentItemId = null
+  form.dataType = 'RAW'
+
+  // 加载机型
+  try {
+    const res = await axios.get('/api/aircraft/models')
+    models.value = res.data
+  } catch (e) {
+    console.error('加载机型失败', e)
+  }
+
+  // 分析列属性
   try {
     const formData = new FormData()
     formData.append('file', file.raw)
-    
-    const response = await axios.post('/api/csv/preview', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+    const res = await axios.post('/api/csv/analyze-columns', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
     })
-    previewResult.value = response.data
+    analysisResult.value = res.data
     currentStep.value = 2
-  } catch (error) {
-    console.error('预览失败:', error)
+
+    // 构建列表格数据
+    const tableData = []
+    const cols = res.data.columns || []
+    for (let i = 0; i < cols.length; i++) {
+      const col = cols[i]
+      const isNumeric = (res.data.numericColumns || []).includes(col)
+      const isTimestamp = col === res.data.timestampColumn
+      const sampleRow = res.data.sampleData && res.data.sampleData.length > 0 ? res.data.sampleData[0] : {}
+      tableData.push({
+        name: col,
+        type: res.data.columnTypes ? res.data.columnTypes[col] : 'TEXT',
+        isTimestamp: isTimestamp,
+        sample: sampleRow[col] || ''
+      })
+    }
+    columnTableData.value = tableData
+
+    // 默认设备名取自文件名
+    if (file.raw) {
+      const name = file.raw.name.replace(/\.csv$/i, '').toLowerCase().replace(/[^a-z0-9_]/g, '_')
+      form.tableName = name
+    }
+  } catch (e) {
+    console.error('列分析失败', e)
   }
 }
 
-// 上传并处理
-const handleUploadAndProcess = async () => {
-  processing.value = true
-  currentStep.value = 3
+// 机型变更
+const handleModelChange = async (modelCode) => {
+  form.tailNumber = ''
+  form.parentItemId = null
+  tailNumbers.value = []
+  configTree.value = []
+  if (!modelCode) return
+  try {
+    const [tnRes, treeRes] = await Promise.all([
+      axios.get('/api/aircraft/tail-numbers', { params: { modelCode } }),
+      axios.get('/api/aircraft/config-items/tree', { params: { modelCode } })
+    ])
+    tailNumbers.value = tnRes.data
+    configTree.value = buildTreeDisplay(treeRes.data)
+  } catch (e) {
+    console.error('加载构型数据失败', e)
+  }
+}
 
+// 机号变更
+const handleTailChange = (tailNumber) => {
+  // 可在此处根据机号自动填充设备名
+}
+
+const buildTreeDisplay = (nodes) => {
+  if (!nodes) return []
+  return nodes.map(node => ({
+    ...node,
+    label: getNodeLabel(node),
+    children: node.children ? buildTreeDisplay(node.children) : []
+  }))
+}
+
+const getNodeLabel = (node) => {
+  const parts = []
+  if (node.ataChapter) parts.push(`[${node.ataChapter}]`)
+  if (node.systemName) parts.push(node.systemName)
+  if (node.subSystemName) parts.push(node.subSystemName)
+  if (node.equipmentName) parts.push(node.equipmentName)
+  return parts.join(' > ') || `ID:${node.itemId}`
+}
+
+// 上传
+const handleUpload = async () => {
+  uploading.value = true
   try {
     const formData = new FormData()
     formData.append('file', selectedFile.value.raw)
     formData.append('tableName', form.tableName)
+    formData.append('tailNumber', form.tailNumber)
+    if (form.parentItemId) formData.append('parentItemId', form.parentItemId)
+    formData.append('dataType', form.dataType)
 
-    const response = await axios.post('/api/csv/upload-async', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data'
-      }
+    const res = await axios.post('/api/csv/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
     })
-
-    const taskId = response.data.taskId
-    
-    // 开始轮询状态
-    startPolling(taskId)
-
-  } catch (error) {
-    processing.value = false
+    uploadResult.value = res.data
+    currentStep.value = 3
+  } catch (e) {
+    console.error('上传失败', e)
+  } finally {
+    uploading.value = false
   }
 }
 
-// 轮询任务状态
-const startPolling = (taskId) => {
-  pollTimer.value = setInterval(async () => {
-    try {
-      const response = await axios.get('/api/csv/task-status', {
-        params: { taskId }
-      })
-      taskStatus.value = response.data
-
-      if (['COMPLETED', 'FAILED'].includes(response.data.status)) {
-        clearInterval(pollTimer.value)
-        processing.value = false
-      }
-    } catch (error) {
-      console.error('查询状态失败:', error)
-    }
-  }, 500)
+const resetForm = () => {
+  selectedFile.value = null
+  analysisResult.value = null
+  columnTableData.value = []
+  uploadResult.value = null
+  currentStep.value = 1
+  form.modelCode = ''
+  form.tailNumber = ''
+  form.tableName = ''
+  form.parentItemId = null
+  form.dataType = 'RAW'
 }
-
-// 格式化时间
-const formatDuration = (ms) => {
-  if (!ms) return '0s'
-  const seconds = Math.floor(ms / 1000)
-  if (seconds < 60) return `${seconds}s`
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`
-}
-
-watch(() => currentStep.value, () => {
-  // 清理定时器
-  if (currentStep.value < 3 && pollTimer.value) {
-    clearInterval(pollTimer.value)
-  }
-})
 </script>
 
 <style scoped>
-.upload-page {
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.card-header {
-  font-size: 20px;
-  font-weight: bold;
-}
-
-.step-section {
-  margin-top: 30px;
-  padding: 20px;
-  background-color: #f5f7fa;
-  border-radius: 8px;
-}
-
-.step-title {
-  font-size: 16px;
-  font-weight: bold;
-  margin-bottom: 20px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.stats-row {
-  margin-bottom: 20px;
-}
-
-.stat-card {
-  padding: 20px;
-  border-radius: 8px;
-  text-align: center;
-  color: white;
-}
-
-.stat-card.total {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-}
-
-.stat-card.valid {
-  background: linear-gradient(135deg, #11998e 0%, #38ef7d 100%);
-}
-
-.stat-card.invalid {
-  background: linear-gradient(135deg, #eb3349 0%, #f45c43 100%);
-}
-
-.stat-card.columns {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-}
-
-.stat-card.process {
-  background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-}
-
-.stat-card.success {
-  background: linear-gradient(135deg, #43e97b 0%, #38f9d7 100%);
-}
-
-.stat-card.time {
-  background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-}
-
-.stat-value {
-  font-size: 32px;
-  font-weight: bold;
-}
-
-.stat-label {
-  font-size: 14px;
-  opacity: 0.9;
-  margin-top: 5px;
-}
-
-.validation-alert {
-  margin-bottom: 20px;
-}
-
-.columns-section {
-  margin: 20px 0;
-}
-
-.columns-section h4 {
-  margin-bottom: 10px;
-}
-
-.preview-section {
-  margin: 20px 0;
-}
-
-.preview-section h4 {
-  margin-bottom: 10px;
-}
-
-.action-buttons {
-  margin-top: 30px;
-  text-align: center;
-}
-
-.validation-result {
-  margin: 20px 0;
-}
-
-.validation-details {
-  display: flex;
-  gap: 30px;
-  margin-top: 10px;
-  flex-wrap: wrap;
-}
-
-.validation-details span {
-  font-size: 14px;
-}
-
-.percentage-value {
-  font-size: 18px;
-  font-weight: bold;
-  color: #409eff;
-}
-
-.upload-demo {
-  margin-top: 10px;
-}
+.upload-page { max-width: 1400px; margin: 0 auto; }
+.card-header { font-size: 18px; font-weight: bold; }
+.step-section { margin-top: 30px; padding: 20px; background-color: #f5f7fa; border-radius: 8px; }
+.step-title { font-size: 16px; font-weight: bold; margin-bottom: 20px; display: flex; align-items: center; gap: 10px; }
+.stats-row { margin-bottom: 20px; }
+.stat-card { padding: 20px; border-radius: 8px; text-align: center; color: white; }
+.stat-card.total { background: linear-gradient(135deg, #667eea, #764ba2); }
+.stat-card.valid { background: linear-gradient(135deg, #11998e, #38ef7d); }
+.stat-card.columns { background: linear-gradient(135deg, #f093fb, #f5576c); }
+.stat-card.time { background: linear-gradient(135deg, #4facfe, #00f2fe); }
+.stat-value { font-size: 32px; font-weight: bold; }
+.stat-label { font-size: 14px; opacity: 0.9; margin-top: 5px; }
+.upload-demo { margin-top: 10px; }
 </style>

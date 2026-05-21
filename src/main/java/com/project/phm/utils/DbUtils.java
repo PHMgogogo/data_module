@@ -2,13 +2,11 @@ package com.project.phm.utils;
 
 import org.springframework.jdbc.core.BatchPreparedStatementSetter;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.StatementCallback;
 import org.springframework.stereotype.Component;
 
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.sql.*;
+import java.util.*;
 import java.util.stream.Collectors;
 
 /**
@@ -297,5 +295,58 @@ public class DbUtils {
         }
     }
 
-   
+    /**
+     * 通用单值查询（供其他服务使用达梦数据库）
+     */
+    public <T> T queryForObject(String sql, Class<T> requiredType, Object... args) {
+        try {
+            return jdbcTemplate.queryForObject(sql, requiredType, args);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /**
+     * 通用列表查询（供其他服务使用达梦数据库）
+     */
+    public List<Map<String, Object>> queryForList(String sql, Object... args) {
+        try {
+            return jdbcTemplate.queryForList(sql, args);
+        } catch (Exception e) {
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /**
+     * 执行原始SQL查询（不捕获异常，异常由调用方处理）
+     * 用于 SQL 执行接口，让数据库自身的异常信息透传给调用方
+     * 自动设置 30 秒查询超时，防止 SQL 执行挂起
+     */
+    public List<Map<String, Object>> executeQuery(String sql) {
+        return jdbcTemplate.execute((StatementCallback<List<Map<String, Object>>>) stmt -> {
+            stmt.setQueryTimeout(30);
+            try (ResultSet rs = stmt.executeQuery(sql)) {
+                ResultSetMetaData meta = rs.getMetaData();
+                int colCount = meta.getColumnCount();
+                List<Map<String, Object>> results = new ArrayList<>();
+                while (rs.next()) {
+                    Map<String, Object> row = new HashMap<>();
+                    for (int i = 1; i <= colCount; i++) {
+                        String colName = meta.getColumnName(i);
+                        Object value = rs.getObject(i);
+                        row.put(colName, value);
+                    }
+                    results.add(row);
+                }
+                return results;
+            }
+        });
+    }
+
+    /**
+     * 执行 SQL 语句（不捕获异常），用于 EXPLAIN 校验等场景
+     */
+    public void execute(String sql) {
+        jdbcTemplate.execute(sql);
+    }
 }

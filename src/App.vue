@@ -2,15 +2,19 @@
   <div class="app">
     <el-container>
       <el-header height="60px" class="header">
-        <h1>CSV上传解析与数据管理系统</h1>
+        <h1>飞机地面健康管理系统</h1>
       </el-header>
-      <el-container>
-        <el-aside width="200px" class="aside">
+      <el-container class="body-container">
+        <el-aside width="220px" class="aside">
           <el-menu
             :default-active="activeMenu"
             class="menu"
             @select="handleMenuSelect"
           >
+            <el-menu-item index="config">
+              <el-icon><Setting /></el-icon>
+              <span>飞机构型管理</span>
+            </el-menu-item>
             <el-menu-item index="upload">
               <el-icon><Upload /></el-icon>
               <span>上传CSV</span>
@@ -22,7 +26,8 @@
           </el-menu>
         </el-aside>
         <el-main class="main">
-          <UploadPage v-if="activeMenu === 'upload'" />
+          <AircraftConfigPage v-if="activeMenu === 'config'" />
+          <UploadPage v-else-if="activeMenu === 'upload'" />
           <ManagePage v-else-if="activeMenu === 'manage'" />
         </el-main>
       </el-container>
@@ -32,11 +37,12 @@
 
 <script setup>
 import { ref } from 'vue'
-import { Upload, DataAnalysis } from '@element-plus/icons-vue'
+import { Upload, DataAnalysis, Setting } from '@element-plus/icons-vue'
+import AircraftConfigPage from './components/AircraftConfigPage.vue'
 import UploadPage from './components/UploadPage.vue'
 import ManagePage from './components/ManagePage.vue'
 
-const activeMenu = ref('upload')
+const activeMenu = ref('config')
 
 const handleMenuSelect = (key) => {
   activeMenu.value = key
@@ -46,7 +52,6 @@ const handleMenuSelect = (key) => {
 <style scoped>
 .app {
   height: 100vh;
-  overflow: hidden;
 }
 
 .header {
@@ -71,6 +76,10 @@ const handleMenuSelect = (key) => {
 .menu {
   height: 100%;
   border-right: none;
+}
+
+.body-container {
+  overflow: hidden;
 }
 
 .main {
