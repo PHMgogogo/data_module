@@ -54,13 +54,13 @@ public class SchemaInitializer {
      */
     private void createAircraftConfigTable() {
         String sql = "CREATE TABLE IF NOT EXISTS aircraft_config ("
-                + "tail_number VARCHAR(20) NOT NULL, "
+                + "aircraft_number VARCHAR(20) NOT NULL, "
                 + "model_code VARCHAR(50) NOT NULL, "
                 + "airline VARCHAR(100), "
                 + "config_version VARCHAR(20), "
                 + "status VARCHAR(20) DEFAULT 'active', "
                 + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
-                + "PRIMARY KEY (tail_number)"
+                + "PRIMARY KEY (aircraft_number)"
                 + ")";
         jdbcTemplate.execute(sql);
         log.info("表 aircraft_config 已就绪");
@@ -92,7 +92,7 @@ public class SchemaInitializer {
     private void createConfigDataMappingTable() {
         String sql = "CREATE TABLE IF NOT EXISTS config_data_mapping ("
                 + "mapping_id INT IDENTITY(1,1) NOT NULL, "
-                + "tail_number VARCHAR(20) NOT NULL, "
+                + "aircraft_number VARCHAR(20) NOT NULL, "
                 + "item_id INT NOT NULL, "
                 + "csv_table_name VARCHAR(200), "
                 + "data_type VARCHAR(50) DEFAULT 'RAW', "
@@ -110,7 +110,7 @@ public class SchemaInitializer {
     private void createHealthRecordTable() {
         String sql = "CREATE TABLE IF NOT EXISTS health_record ("
                 + "record_id INT IDENTITY(1,1) NOT NULL, "
-                + "tail_number VARCHAR(20) NOT NULL, "
+                + "aircraft_number VARCHAR(20) NOT NULL, "
                 + "item_id INT NOT NULL, "
                 + "record_type VARCHAR(20), "
                 + "indicator_name VARCHAR(200), "

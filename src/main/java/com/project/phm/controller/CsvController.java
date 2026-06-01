@@ -6,6 +6,9 @@ import com.project.phm.utils.CsvColumnAnalyzer;
 import com.project.phm.utils.CsvColumnAnalyzer.AnalysisResult;
 import com.project.phm.utils.DataValidationUtils;
 import com.project.phm.utils.DbUtils;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.HttpHeaders;
@@ -48,8 +51,13 @@ public class CsvController {
     /**
      * 分析CSV列属性（上传前调用，返回列类型和构型模板建议）
      */
-    @PostMapping("/analyze-columns")
-    public ResponseEntity<?> analyzeColumns(@RequestParam("file") MultipartFile file) {
+    @Operation(summary = "分析CSV列属性", 
+            description = "上传前调用，自动识别CSV每一列的数据类型（数值/日期/字符串等），并给出构型项目模板建议。\n\n" +
+                    "**用途**：辅助前端在上传前确认列类型，并推荐合适的构型项目模板。")
+    @Tag(name = "04-CSV数据管理")
+    @PostMapping(value = "/analyze-columns", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> analyzeColumns(@Parameter(description = "CSV文件（multipart/form-data）", required = true) 
+                                             @RequestParam("file") MultipartFile file) {
         try {
             AnalysisResult result = columnAnalyzer.analyze(file);
             return ResponseEntity.ok(result);
@@ -63,8 +71,18 @@ public class CsvController {
     /**
      * 上传预览校验（上传前校验，含列分析）
      */
-    @PostMapping("/preview")
-    public ResponseEntity<?> previewCsv(@RequestParam("file") MultipartFile file) {
+    @Operation(summary = "上传预览校验", 
+            description = "上传前对CSV文件进行完整校验，包含：\n" +
+                    "- 文件格式校验（必须是CSV）\n" +
+                    "- 表头校验（必须有列名）\n" +
+                    "- 数据行校验（空行检测、列数一致性）\n" +
+                    "- 列类型分析\n" +
+                    "- 文件大小警告（>100MB）\n\n" +
+                    "**返回**：ValidationResult（含 errors/warnings/sampleData）")
+    @Tag(name = "04-CSV数据管理")
+    @PostMapping(value = "/preview", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> previewCsv(@Parameter(description = "CSV文件（multipart/form-data）", required = true) 
+                                         @RequestParam("file") MultipartFile file) {
         try {
             ValidationResult validationResult = validationUtils.validateUpload(file);
             AnalysisResult analysis = columnAnalyzer.analyze(file);
@@ -83,19 +101,27 @@ public class CsvController {
     /**
      * 上传CSV数据 → 达梦数据库 csv_xxx 表 + 绑定飞机构型
      */
-    @PostMapping("/upload")
+    @Operation(summary = "上传CSV文件并入库", 
+            description = "解析CSV文件并保存到达梦数据库的 `csv_xxx` 表，同时：\n" +
+                    "- 自动建表（如不存在）\n" +
+                    "- 计算原始数据的SHA-256哈希（用于后续导出一致性校验）\n" +
+                    "- 保存到元数据表 csv_table_metadata\n" +
+                    "- 绑定到飞机构型（关联机号 + 构型项目）\n\n" +
+                    "**注意**：表名会自动加 `csv_` 前缀（如传 `engine` 会变成 `csv_engine`）")
+    @Tag(name = "04-CSV数据管理")
+    @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> uploadCsv(
-            @RequestParam("file") MultipartFile file,
-            @RequestParam("tableName") String tableName,
-            @RequestParam("tailNumber") String tailNumber,
-            @RequestParam(value = "parentItemId", required = false) Long parentItemId,
-            @RequestParam(value = "dataType", required = false) String dataType) {
+            @Parameter(description = "CSV文件", required = true) @RequestParam("file") MultipartFile file,
+            @Parameter(description = "表名（会自动加csv_前缀）", required = true, example = "engine_vibration") @RequestParam("tableName") String tableName,
+            @Parameter(description = "关联机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
+            @Parameter(description = "构型项目ID（可选）", example = "3") @RequestParam(value = "parentItemId", required = false) Long parentItemId,
+            @Parameter(description = "数据类型（DIAGNOSIS/EVALUATION/PREDICTION/RAW）", example = "RAW") @RequestParam(value = "dataType", required = false) String dataType) {
         try {
             // 确保表名以 csv_ 开头
             String fullTableName = tableName.toLowerCase().startsWith("csv_") ? tableName : "csv_" + tableName;
 
             Map<String, Object> result = csvService.uploadCsv(
-                    file, fullTableName, tailNumber, parentItemId, dataType);
+                    file, fullTableName, aircraftNumber, parentItemId, dataType);
 
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
@@ -114,12 +140,16 @@ public class CsvController {
     /**
      * 分页查询达梦 csv_xxx 表数据
      */
+    @Operation(summary = "分页查询设备数据", 
+            description = "按机号+设备名分页查询达梦 csv_xxx 表数据。\n\n" +
+                    "**示例**：aircraftNumber=B-1234, deviceName=engine_vibration → 查询 csv_engine_vibration")
+    @Tag(name = "04-CSV数据管理")
     @GetMapping("/query")
     public ResponseEntity<?> queryDeviceData(
-            @RequestParam("tailNumber") String tailNumber,
-            @RequestParam("deviceName") String deviceName,
-            @RequestParam(value = "page", defaultValue = "1") int page,
-            @RequestParam(value = "size", defaultValue = "20") int size) {
+            @Parameter(description = "机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
+            @Parameter(description = "设备名（对应csv_后的表名）", required = true, example = "engine_vibration") @RequestParam("deviceName") String deviceName,
+            @Parameter(description = "页码", example = "1") @RequestParam(value = "page", defaultValue = "1") int page,
+            @Parameter(description = "每页条数", example = "20") @RequestParam(value = "size", defaultValue = "20") int size) {
         try {
             String fullTableName = "csv_" + deviceName;
             if (!dbUtils.tableExists(fullTableName.toUpperCase())) {
@@ -136,6 +166,10 @@ public class CsvController {
      * 获取所有已存储的设备列表（含机号）
      * 从达梦元数据表 csv_table_metadata 读取
      */
+    @Operation(summary = "获取所有已存储设备列表", 
+            description = "从达梦元数据表 csv_table_metadata 读取，返回所有已上传CSV的设备列表。\n\n" +
+                    "**返回字段**：label（显示名）、aircraftNumber（机号）、deviceName（设备名）")
+    @Tag(name = "04-CSV数据管理")
     @GetMapping("/tables")
     public ResponseEntity<?> getAllTables() {
         try {
@@ -154,7 +188,7 @@ public class CsvController {
                 String deviceName = rawTableName.toLowerCase().startsWith("csv_")
                         ? rawTableName.substring(4) : rawTableName;
                 d.put("label", tn + " / " + deviceName);
-                d.put("tailNumber", tn);
+                d.put("aircraftNumber", tn);
                 d.put("deviceName", deviceName);
                 devices.add(d);
             }
@@ -169,23 +203,26 @@ public class CsvController {
     /**
      * 获取达梦 csv_xxx 表数据总览
      */
+    @Operation(summary = "获取设备数据总览", 
+            description = "获取指定 csv_xxx 表的数据总览，包含行数、列数、列类型等信息。")
+    @Tag(name = "04-CSV数据管理")
     @GetMapping("/overview")
     public ResponseEntity<?> getOverview(
-            @RequestParam("tailNumber") String tailNumber,
-            @RequestParam("deviceName") String deviceName) {
+            @Parameter(description = "机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
+            @Parameter(description = "设备名", required = true, example = "engine_vibration") @RequestParam("deviceName") String deviceName) {
         try {
             String fullTableName = "csv_" + deviceName;
             if (!dbUtils.tableExists(fullTableName.toUpperCase())) {
                 Map<String, Object> empty = new LinkedHashMap<>();
                 empty.put("deviceName", deviceName);
-                empty.put("tailNumber", tailNumber);
+                empty.put("aircraftNumber", aircraftNumber);
                 empty.put("totalRows", 0);
                 return ResponseEntity.ok(empty);
             }
             Map<String, Object> overview = csvService.getOverview(fullTableName);
             // 确保前端需要的字段存在
-            if (!overview.containsKey("tailNumber") || overview.get("tailNumber") == null) {
-                overview.put("tailNumber", tailNumber);
+            if (!overview.containsKey("aircraftNumber") || overview.get("aircraftNumber") == null) {
+                overview.put("aircraftNumber", aircraftNumber);
             }
             return ResponseEntity.ok(overview);
         } catch (Exception e) {
@@ -198,15 +235,19 @@ public class CsvController {
     /**
      * 按数值范围分页查询达梦数据
      */
+    @Operation(summary = "按数值范围分页查询", 
+            description = "在指定列上按数值范围(min ≤ value ≤ max)过滤数据，并分页返回。\n\n" +
+                    "**示例**：column=vibration, min=2.0, max=3.0 → 查询振动值在2.0~3.0之间的数据")
+    @Tag(name = "04-CSV数据管理")
     @GetMapping("/query-range")
     public ResponseEntity<?> queryByValueRange(
-            @RequestParam("tailNumber") String tailNumber,
-            @RequestParam("deviceName") String deviceName,
-            @RequestParam("column") String column,
-            @RequestParam(value = "min", required = false) Double minVal,
-            @RequestParam(value = "max", required = false) Double maxVal,
-            @RequestParam(value = "page", defaultValue = "1") int page,
-            @RequestParam(value = "size", defaultValue = "20") int size) {
+            @Parameter(description = "机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
+            @Parameter(description = "设备名", required = true, example = "engine_vibration") @RequestParam("deviceName") String deviceName,
+            @Parameter(description = "数值列名", required = true, example = "vibration") @RequestParam("column") String column,
+            @Parameter(description = "最小值（可选）", example = "2.0") @RequestParam(value = "min", required = false) Double minVal,
+            @Parameter(description = "最大值（可选）", example = "3.0") @RequestParam(value = "max", required = false) Double maxVal,
+            @Parameter(description = "页码", example = "1") @RequestParam(value = "page", defaultValue = "1") int page,
+            @Parameter(description = "每页条数", example = "20") @RequestParam(value = "size", defaultValue = "20") int size) {
         try {
             String fullTableName = "csv_" + deviceName;
             Map<String, Object> result = csvService.queryPageWithRange(
@@ -228,8 +269,28 @@ public class CsvController {
      * @param body { "sql": "SELECT ..." }
      * @return 查询结果（columns + data + totalRows）或错误信息
      */
+    @Operation(summary = "执行自定义SQL查询", 
+            description = "接收前端传入的SQL语句，校验语法后执行。\n\n" +
+                    "**安全限制**：\n" +
+                    "- 仅允许 `SELECT` 查询\n" +
+                    "- 通过 EXPLAIN 预校验语法\n" +
+                    "- INSERT/UPDATE/DELETE/DROP 等会被拒绝\n\n" +
+                    "**返回**：columns（列名列表）+ data（数据行）+ totalRows（总行数）\n\n" +
+                    "**示例SQL**：\n" +
+                    "```sql\n" +
+                    "SELECT * FROM csv_engine_vibration WHERE vibration > 2.3 ORDER BY id\n" +
+                    "```")
+    @Tag(name = "04-CSV数据管理")
     @PostMapping("/sql")
-    public ResponseEntity<?> executeSql(@RequestBody Map<String, String> body) {
+    public ResponseEntity<?> executeSql(
+            @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    description = "SQL查询体",
+                    required = true,
+                    content = @io.swagger.v3.oas.annotations.media.Content(
+                            mediaType = "application/json",
+                            examples = @io.swagger.v3.oas.annotations.media.ExampleObject(
+                                    value = "{\"sql\": \"SELECT * FROM csv_engine_vibration ORDER BY id\"}")))
+            @RequestBody Map<String, String> body) {
         String sql = body != null ? body.get("sql") : null;
         if (sql == null || sql.trim().isEmpty()) {
             return ResponseEntity.badRequest().body(errorMap("SQL语句不能为空"));
@@ -249,8 +310,12 @@ public class CsvController {
 
     // ==================== 原有达梦表操作（保持不变） ====================
 
+    @Operation(summary = "查询表的全部数据", 
+            description = "返回指定 csv_xxx 表的所有数据（不分页，慎用！大表会很慢）。\n\n" +
+                    "建议优先使用 `/csv/query`（分页）或 `/csv/sql`（自定义查询）。")
+    @Tag(name = "04-CSV数据管理")
     @GetMapping("/list")
-    public ResponseEntity<?> listData(@RequestParam("tableName") String tableName) {
+    public ResponseEntity<?> listData(@Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName) {
         try {
             List<Map<String, Object>> data = csvService.listData(tableName);
             return ResponseEntity.ok(data);
@@ -261,9 +326,13 @@ public class CsvController {
         }
     }
 
+    @Operation(summary = "删除单条数据", 
+            description = "根据 ID 删除指定 csv_xxx 表中的一条记录。\n\n" +
+                    "**⚠️ 警告**：删除后会破坏数据一致性，导出校验将失败。")
+    @Tag(name = "04-CSV数据管理")
     @PostMapping("/delete")
-    public ResponseEntity<?> deleteData(@RequestParam("tableName") String tableName,
-                                        @RequestParam("id") int id) {
+    public ResponseEntity<?> deleteData(@Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName,
+                                        @Parameter(description = "记录ID", required = true, example = "1") @RequestParam("id") int id) {
         try {
             boolean success = csvService.deleteData(tableName, id);
             return ResponseEntity.ok(successMap("删除" + (success ? "成功" : "失败")));
@@ -274,8 +343,12 @@ public class CsvController {
         }
     }
 
+    @Operation(summary = "清空表数据", 
+            description = "清空指定 csv_xxx 表中所有数据，但保留表结构（不删除元数据）。\n\n" +
+                    "**⚠️ 警告**：此操作不可逆！")
+    @Tag(name = "04-CSV数据管理")
     @PostMapping("/truncate")
-    public ResponseEntity<?> truncateTable(@RequestParam("tableName") String tableName) {
+    public ResponseEntity<?> truncateTable(@Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName) {
         try {
             csvService.truncateTable(tableName);
             return ResponseEntity.ok(successMap("清空成功"));
@@ -286,8 +359,12 @@ public class CsvController {
         }
     }
 
+    @Operation(summary = "删除整个表", 
+            description = "删除指定 csv_xxx 表（包括数据和表结构）。\n\n" +
+                    "**⚠️ 危险**：此操作不可逆！")
+    @Tag(name = "04-CSV数据管理")
     @PostMapping("/drop")
-    public ResponseEntity<?> dropTable(@RequestParam("tableName") String tableName) {
+    public ResponseEntity<?> dropTable(@Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName) {
         try {
             csvService.dropTable(tableName);
             return ResponseEntity.ok(successMap("删除成功"));
@@ -298,8 +375,18 @@ public class CsvController {
         }
     }
 
+    @Operation(summary = "导出CSV并校验一致性", 
+            description = "导出指定 csv_xxx 表的数据为CSV文件，并通过SHA-256哈希校验数据完整性。\n\n" +
+                    "**校验响应头**：\n" +
+                    "- `X-Validation-Status`：success/error\n" +
+                    "- `X-Validation-Message`：校验消息（URL编码）\n" +
+                    "- `X-Is-Consistent`：true/false（数据是否一致）\n" +
+                    "- `X-Original-Rows`：原始上传行数\n" +
+                    "- `X-Actual-Rows`：实际导出行数\n\n" +
+                    "**校验原理**：上传时保存原始数据SHA-256哈希，导出时对比哈希值。任何修改都会被检测出来。")
+    @Tag(name = "04-CSV数据管理")
     @GetMapping("/export")
-    public ResponseEntity<byte[]> exportCsv(@RequestParam("tableName") String tableName) {
+    public ResponseEntity<byte[]> exportCsv(@Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName) {
         try {
             List<String[]> exportedData = csvService.exportCsv(tableName);
             int actualRows = Math.max(0, exportedData.size() - 1);

@@ -1,6 +1,5 @@
 package com.project.phm.service;
 
-import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.project.phm.entity.*;
 import com.project.phm.mapper.*;
@@ -10,7 +9,7 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * 飞机构型管理服务 — 机型/构型/系统设备关联的业务逻辑
+ * 飞机单机管理服务 — 机型/构型/系统设备关联的业务逻辑
  */
 @Service
 public class AircraftConfigService {
@@ -19,18 +18,15 @@ public class AircraftConfigService {
     private final AircraftConfigMapper aircraftConfigMapper;
     private final ConfigItemMapper configItemMapper;
     private final ConfigDataMappingMapper configDataMappingMapper;
-    private final HealthRecordMapper healthRecordMapper;
 
     public AircraftConfigService(AircraftModelMapper aircraftModelMapper,
                                   AircraftConfigMapper aircraftConfigMapper,
                                   ConfigItemMapper configItemMapper,
-                                  ConfigDataMappingMapper configDataMappingMapper,
-                                  HealthRecordMapper healthRecordMapper) {
+                                  ConfigDataMappingMapper configDataMappingMapper) {
         this.aircraftModelMapper = aircraftModelMapper;
         this.aircraftConfigMapper = aircraftConfigMapper;
         this.configItemMapper = configItemMapper;
         this.configDataMappingMapper = configDataMappingMapper;
-        this.healthRecordMapper = healthRecordMapper;
     }
 
     // ==================== 机型管理 ====================
@@ -59,56 +55,56 @@ public class AircraftConfigService {
         aircraftModelMapper.deleteById(modelCode);
     }
 
-    // ==================== 飞机构型管理 ====================
+    // ==================== 飞机单机管理 ====================
 
-    public List<AircraftConfig> listConfigs(String modelCode) {
+    public List<Aircraft> listPlanes(String modelCode) {
         if (modelCode != null && !modelCode.isEmpty()) {
             return aircraftConfigMapper.selectList(
-                    Wrappers.<AircraftConfig>lambdaQuery()
-                            .eq(AircraftConfig::getModelCode, modelCode)
-                            .orderByAsc(AircraftConfig::getTailNumber));
+                    Wrappers.<Aircraft>lambdaQuery()
+                            .eq(Aircraft::getModelCode, modelCode)
+                            .orderByAsc(Aircraft::getAircraftNumber));
         }
         return aircraftConfigMapper.selectList(
-                Wrappers.<AircraftConfig>lambdaQuery().orderByAsc(AircraftConfig::getTailNumber));
+                Wrappers.<Aircraft>lambdaQuery().orderByAsc(Aircraft::getAircraftNumber));
     }
 
-    public AircraftConfig getConfig(String tailNumber) {
-        return aircraftConfigMapper.selectById(tailNumber);
+    public Aircraft getPlane(String aircraftNumber) {
+        return aircraftConfigMapper.selectById(aircraftNumber);
     }
 
-    public void addConfig(AircraftConfig config) {
-        if (config.getTailNumber() == null || config.getTailNumber().trim().isEmpty()) {
+    public void addPlane(Aircraft aircraft) {
+        if (aircraft.getAircraftNumber() == null || aircraft.getAircraftNumber().trim().isEmpty()) {
             throw new IllegalArgumentException("机号不能为空");
         }
-        if (aircraftModelMapper.selectById(config.getModelCode()) == null) {
-            throw new IllegalArgumentException("机型不存在: " + config.getModelCode());
+        if (aircraftModelMapper.selectById(aircraft.getModelCode()) == null) {
+            throw new IllegalArgumentException("机型不存在: " + aircraft.getModelCode());
         }
-        if (aircraftConfigMapper.selectById(config.getTailNumber()) != null) {
-            throw new IllegalArgumentException("机号已存在: " + config.getTailNumber());
+        if (aircraftConfigMapper.selectById(aircraft.getAircraftNumber()) != null) {
+            throw new IllegalArgumentException("机号已存在: " + aircraft.getAircraftNumber());
         }
-        if (config.getStatus() == null || config.getStatus().trim().isEmpty()) {
-            config.setStatus("active");
+        if (aircraft.getStatus() == null || aircraft.getStatus().trim().isEmpty()) {
+            aircraft.setStatus("active");
         }
-        aircraftConfigMapper.insert(config);
+        aircraftConfigMapper.insert(aircraft);
     }
 
-    public void removeConfig(String tailNumber) {
-        if (aircraftConfigMapper.selectById(tailNumber) == null) {
-            throw new IllegalArgumentException("构型不存在: " + tailNumber);
+    public void removePlane(String aircraftNumber) {
+        if (aircraftConfigMapper.selectById(aircraftNumber) == null) {
+            throw new IllegalArgumentException("构型不存在: " + aircraftNumber);
         }
-        aircraftConfigMapper.deleteById(tailNumber);
+        aircraftConfigMapper.deleteById(aircraftNumber);
     }
 
     /**
      * 获取某机型下的所有可用机号
      */
-    public List<String> listActiveTailNumbers(String modelCode) {
-        List<AircraftConfig> configs = aircraftConfigMapper.selectList(
-                Wrappers.<AircraftConfig>lambdaQuery()
-                        .eq(AircraftConfig::getModelCode, modelCode)
-                        .eq(AircraftConfig::getStatus, "active")
-                        .orderByAsc(AircraftConfig::getTailNumber));
-        return configs.stream().map(AircraftConfig::getTailNumber).collect(Collectors.toList());
+    public List<String> listActiveAircraftNumbers(String modelCode) {
+        List<Aircraft> configs = aircraftConfigMapper.selectList(
+                Wrappers.<Aircraft>lambdaQuery()
+                        .eq(Aircraft::getModelCode, modelCode)
+                        .eq(Aircraft::getStatus, "active")
+                        .orderByAsc(Aircraft::getAircraftNumber));
+        return configs.stream().map(Aircraft::getAircraftNumber).collect(Collectors.toList());
     }
 
     // ==================== 构型项目管理 ====================
@@ -238,10 +234,10 @@ public class AircraftConfigService {
     /**
      * 创建CSV数据到飞机构型的关联记录
      */
-    public void createDataMapping(String tailNumber, Long itemId, String csvTableName,
+    public void createDataMapping(String aircraftNumber, Long itemId, String csvTableName,
                                   String dataType, String dataTime) {
         ConfigDataMapping mapping = new ConfigDataMapping();
-        mapping.setTailNumber(tailNumber);
+        mapping.setAircraftNumber(aircraftNumber);
         mapping.setItemId(itemId);
         mapping.setCsvTableName(csvTableName);
         mapping.setDataType(dataType != null ? dataType : "RAW");
@@ -249,10 +245,10 @@ public class AircraftConfigService {
         configDataMappingMapper.insert(mapping);
     }
 
-    public List<ConfigDataMapping> listMappingsByTailNumber(String tailNumber) {
+    public List<ConfigDataMapping> listMappingsByAircraftNumber(String aircraftNumber) {
         return configDataMappingMapper.selectList(
                 Wrappers.<ConfigDataMapping>lambdaQuery()
-                        .eq(ConfigDataMapping::getTailNumber, tailNumber)
+                        .eq(ConfigDataMapping::getAircraftNumber, aircraftNumber)
                         .orderByDesc(ConfigDataMapping::getCreatedAt));
     }
 
@@ -263,28 +259,4 @@ public class AircraftConfigService {
                         .orderByDesc(ConfigDataMapping::getCreatedAt));
     }
 
-    // ==================== 健康记录 ====================
-
-    public void addHealthRecord(HealthRecord record) {
-        if (record.getRecordType() == null) {
-            throw new IllegalArgumentException("记录类型不能为空(DIAGNOSIS/EVALUATION/PREDICTION)");
-        }
-        healthRecordMapper.insert(record);
-    }
-
-    public List<HealthRecord> listHealthRecords(String tailNumber, String recordType) {
-        LambdaQueryWrapper<HealthRecord> wrapper = Wrappers.lambdaQuery();
-        boolean hasTail = tailNumber != null && !tailNumber.isEmpty();
-        boolean hasType = recordType != null && !recordType.isEmpty();
-
-        if (hasTail) {
-            wrapper.eq(HealthRecord::getTailNumber, tailNumber);
-        }
-        if (hasType) {
-            wrapper.eq(HealthRecord::getRecordType, recordType);
-        }
-        wrapper.orderByDesc(HealthRecord::getRecordTime);
-
-        return healthRecordMapper.selectList(wrapper);
-    }
 }

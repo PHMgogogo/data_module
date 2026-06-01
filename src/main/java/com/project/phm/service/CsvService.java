@@ -65,13 +65,13 @@ public class CsvService {
      *
      * @param file         CSV文件
      * @param tableName    达梦表名（需以 csv_ 开头）
-     * @param tailNumber   机号（用于构型关联，可选）
-     * @param parentItemId 父级构型项目ID（可选）
-     * @param dataType     数据类型 RAW/DIAGNOSIS/EVALUATION/PREDICTION（可选）
+     * @param aircraftNumber 机号（用于构型关联，可选）
+     * @param parentItemId  父级构型项目ID（可选）
+     * @param dataType      数据类型 RAW/DIAGNOSIS/EVALUATION/PREDICTION（可选）
      * @return 处理结果
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String tableName,
-                                          String tailNumber, Long parentItemId,
+                                          String aircraftNumber, Long parentItemId,
                                           String dataType) throws Exception {
         long startTime = System.currentTimeMillis();
 
@@ -129,8 +129,8 @@ public class CsvService {
 
         // 5. 保存机号关联元数据
         String deviceName = tableName.startsWith("csv_") ? tableName.substring(4) : tableName;
-        if (tailNumber != null && !tailNumber.trim().isEmpty()) {
-            dbUtils.saveTableMetadata(tableName, "tail_number", tailNumber);
+        if (aircraftNumber != null && !aircraftNumber.trim().isEmpty()) {
+            dbUtils.saveTableMetadata(tableName, "tail_number", aircraftNumber);
         }
 
         // 6. 检查是否需要建表
@@ -148,10 +148,10 @@ public class CsvService {
         Map<String, Object> storageValidation = validationUtils.validateStorage(expectedRows, successCount);
 
         // 9. 创建构型数据关联
-        if (tailNumber != null && !tailNumber.trim().isEmpty() && parentItemId != null) {
+        if (aircraftNumber != null && !aircraftNumber.trim().isEmpty() && parentItemId != null) {
             try {
                 aircraftConfigService.createDataMapping(
-                    tailNumber, parentItemId, deviceName,
+                    aircraftNumber, parentItemId, deviceName,
                     dataType != null ? dataType : "RAW",
                     new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
                 );
@@ -167,7 +167,7 @@ public class CsvService {
         result.put("fileName", file.getOriginalFilename());
         result.put("tableName", tableName);
         result.put("deviceName", deviceName);
-        result.put("tailNumber", tailNumber);
+        result.put("aircraftNumber", aircraftNumber);
         result.put("totalCount", expectedRows);
         result.put("successCount", successCount);
         result.put("failureCount", failureCount);
@@ -300,7 +300,7 @@ public class CsvService {
 
         // 机号（从元数据）
         String metaTail = dbUtils.getTableMetadata(tableName, "tail_number");
-        if (metaTail != null) overview.put("tailNumber", metaTail);
+        if (metaTail != null) overview.put("aircraftNumber", metaTail);
 
         // 1. 获取列名（排除ID）
         List<String> allColumns = dbUtils.getColumnNames(tableName);

@@ -14,7 +14,7 @@ public class ConfigDataMapping {
 
     @TableId(type = IdType.AUTO)
     private Long mappingId;         // PK, 自增
-    private String tailNumber;      // 机号 → AircraftConfig
+    private String aircraftNumber;
     private Long itemId;            // 构型项目 → ConfigItem
     private String csvTableName;    // 关联的 csv_xxx 表名
     private String dataType;        // 数据类型: DIAGNOSIS / EVALUATION / PREDICTION / RAW
@@ -29,12 +29,12 @@ public class ConfigDataMapping {
         this.mappingId = mappingId;
     }
 
-    public String getTailNumber() {
-        return tailNumber;
+    public String getAircraftNumber() {
+        return aircraftNumber;
     }
 
-    public void setTailNumber(String tailNumber) {
-        this.tailNumber = tailNumber;
+    public void setAircraftNumber(String aircraftNumber) {
+        this.aircraftNumber = aircraftNumber;
     }
 
     public Long getItemId() {

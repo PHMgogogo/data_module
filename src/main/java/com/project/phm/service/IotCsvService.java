@@ -1,6 +1,7 @@
 package com.project.phm.service;
 
 import com.opencsv.CSVReader;
+import com.project.phm.entity.Aircraft;
 import com.project.phm.mapper.AircraftConfigMapper;
 import com.project.phm.utils.CsvColumnAnalyzer;
 import com.project.phm.utils.CsvColumnAnalyzer.AnalysisResult;
@@ -65,12 +66,12 @@ public class IotCsvService {
      *
      * @param file       CSV文件
      * @param deviceName IoTDB设备名（去掉csv_前缀）
-     * @param tailNumber 机号（必须，用于构型关联）
+     * @param aircraftNumber 机号（必须，用于构型关联）
      * @param parentItemId 父级构型项目ID（模板创建到此节点下）
      * @param dataType   数据类型 RAW/DIAGNOSIS/EVALUATION/PREDICTION
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String deviceName,
-                                          String tailNumber, Long parentItemId,
+                                          String aircraftNumber, Long parentItemId,
                                           String dataType) throws Exception {
         long startTime = System.currentTimeMillis();
 
@@ -141,11 +142,11 @@ public class IotCsvService {
         if (timestampCol != null) allTypes.remove(timestampCol);
         if (analysis.getTimestampColumn() != null) allTypes.remove(analysis.getTimestampColumn());
         if (!allTypes.isEmpty()) {
-            iotDb.createAlignedTimeseries(tailNumber, cleanDeviceName, allTypes);
+            iotDb.createAlignedTimeseries(aircraftNumber, cleanDeviceName, allTypes);
         }
 
         // 4. 插入数据到IoTDB
-        iotDb.insertAlignedRows(tailNumber, cleanDeviceName, timestampCol, dataRows);
+        iotDb.insertAlignedRows(aircraftNumber, cleanDeviceName, timestampCol, dataRows);
 
         // 5. 自动创建构型模板 — 每个数值列生成一个ConfigItem
         List<Long> createdItemIds = new ArrayList<>();
@@ -154,7 +155,7 @@ public class IotCsvService {
                 try {
                     ConfigItem item = new ConfigItem();
                     // 自动根据机型查找 modelCode
-                    String modelCode = findModelCodeByTailNumber(tailNumber);
+                    String modelCode = findModelCodeByAircraftNumber(aircraftNumber);
                     if (modelCode != null) {
                         item.setModelCode(modelCode);
                     }
@@ -171,12 +172,12 @@ public class IotCsvService {
         }
 
         // 6. 保存元数据到达梦
-        saveMetadata(cleanDeviceName, tailNumber, dataRows, analysis);
+        saveMetadata(cleanDeviceName, aircraftNumber, dataRows, analysis);
 
         // 7. 创建数据关联
-        if (tailNumber != null && !tailNumber.trim().isEmpty()) {
+        if (aircraftNumber != null && !aircraftNumber.trim().isEmpty()) {
             configService.createDataMapping(
-                tailNumber, parentItemId, cleanDeviceName,
+                aircraftNumber, parentItemId, cleanDeviceName,
                 dataType != null ? dataType : "RAW",
                 new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
             );
@@ -188,7 +189,7 @@ public class IotCsvService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("fileName", file.getOriginalFilename());
         result.put("deviceName", cleanDeviceName);
-        result.put("tailNumber", tailNumber);
+        result.put("aircraftNumber", aircraftNumber);
         result.put("totalRows", dataRows.size());
         result.put("numericColumns", analysis.getNumericColumns());
         result.put("textColumns", analysis.getTextColumns());
@@ -204,15 +205,15 @@ public class IotCsvService {
     /**
      * 查询IoTDB设备数据（首页）
      */
-    public List<Map<String, Object>> queryDeviceData(String tailNumber, String deviceName, int limit) {
-        return iotDb.queryLatest(tailNumber, sanitizeDeviceName(deviceName), limit);
+    public List<Map<String, Object>> queryDeviceData(String aircraftNumber, String deviceName, int limit) {
+        return iotDb.queryLatest(aircraftNumber, sanitizeDeviceName(deviceName), limit);
     }
 
     /**
      * 根据机号查询所有设备数据
      */
-    public Map<String, Object> queryByTailNumber(String tailNumber, int page, int size) {
-        List<String> devices = iotDb.listDevices(tailNumber);
+    public Map<String, Object> queryByTailNumber(String aircraftNumber, int page, int size) {
+        List<String> devices = iotDb.listDevices(aircraftNumber);
         // 分页取设备
         int total = devices.size();
         int fromIndex = Math.min((page - 1) * size, total);
@@ -223,7 +224,7 @@ public class IotCsvService {
         for (String device : pageDevices) {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("device", device);
-            entry.put("latestData", iotDb.queryLatest(tailNumber, device, 5));
+            entry.put("latestData", iotDb.queryLatest(aircraftNumber, device, 5));
             resultData.add(entry);
         }
 
@@ -240,15 +241,15 @@ public class IotCsvService {
     /**
      * 获取设备数据总览（行数、时间范围、列类型、数值列统计）
      */
-    public Map<String, Object> getDataOverview(String tailNumber, String deviceName) {
+    public Map<String, Object> getDataOverview(String aircraftNumber, String deviceName) {
         Map<String, Object> overview = new LinkedHashMap<>();
         String cleanName = sanitizeDeviceName(deviceName);
 
         overview.put("deviceName", cleanName);
-        overview.put("tailNumber", tailNumber);
+        overview.put("aircraftNumber", aircraftNumber);
 
         // 1. 传感器列及类型（从IoTDB）
-        Map<String, String> sensors = iotDb.listSensorsWithTypes(tailNumber, cleanName);
+        Map<String, String> sensors = iotDb.listSensorsWithTypes(aircraftNumber, cleanName);
         overview.put("sensors", sensors);
 
         // 2. 列信息列表
@@ -266,11 +267,11 @@ public class IotCsvService {
         overview.put("numericColumns", numericCols);
 
         // 3. 总行数
-        long totalRows = iotDb.queryCount(tailNumber, cleanName);
+        long totalRows = iotDb.queryCount(aircraftNumber, cleanName);
         overview.put("totalRows", totalRows);
 
         // 4. 时间范围
-        Map<String, Object> timeRange = iotDb.getTimeRange(tailNumber, cleanName);
+        Map<String, Object> timeRange = iotDb.getTimeRange(aircraftNumber, cleanName);
         if (!timeRange.isEmpty()) {
             overview.put("timeRange", timeRange);
 
@@ -288,7 +289,7 @@ public class IotCsvService {
 
         // 5. 数值列统计（min/max/avg）
         if (!numericCols.isEmpty()) {
-            Map<String, Map<String, Object>> colStats = iotDb.queryColumnStats(tailNumber, cleanName, numericCols);
+            Map<String, Map<String, Object>> colStats = iotDb.queryColumnStats(aircraftNumber, cleanName, numericCols);
             overview.put("columnStats", colStats);
         }
 
@@ -298,10 +299,10 @@ public class IotCsvService {
     /**
      * 按数值范围查询数据
      */
-    public List<Map<String, Object>> queryWithValueRange(String tailNumber, String deviceName,
+    public List<Map<String, Object>> queryWithValueRange(String aircraftNumber, String deviceName,
                                                           String column, Double minVal, Double maxVal,
                                                           int limit) {
-        return iotDb.queryWithValueFilter(tailNumber, sanitizeDeviceName(deviceName),
+        return iotDb.queryWithValueFilter(aircraftNumber, sanitizeDeviceName(deviceName),
                 column, minVal, maxVal, limit);
     }
 
@@ -346,20 +347,20 @@ public class IotCsvService {
     /**
      * 列出某机号下所有IoTDB设备
      */
-    public List<String> listDevices(String tailNumber) {
-        return iotDb.listDevices(tailNumber);
+    public List<String> listDevices(String aircraftNumber) {
+        return iotDb.listDevices(aircraftNumber);
     }
 
-    private String findModelCodeByTailNumber(String tailNumber) {
+    private String findModelCodeByAircraftNumber(String aircraftNumber) {
         try {
-            com.project.phm.entity.AircraftConfig config = aircraftConfigMapper.selectById(tailNumber);
-            return config != null ? config.getModelCode() : null;
+            Aircraft aircraft = aircraftConfigMapper.selectById(aircraftNumber);
+            return aircraft != null ? aircraft.getModelCode() : null;
         } catch (Exception e) {
             return null;
         }
     }
 
-    private void saveMetadata(String deviceName, String tailNumber,
+    private void saveMetadata(String deviceName, String aircraftNumber,
                               List<Map<String, String>> dataRows,
                               AnalysisResult analysis) {
         try {
@@ -379,7 +380,7 @@ public class IotCsvService {
             // 保存到达梦 csv_table_metadata
             dbUtils.saveTableMetadata(deviceName, "original_data_hash", hexStr.toString());
             dbUtils.saveTableMetadata(deviceName, "original_row_count", String.valueOf(dataRows.size()));
-            dbUtils.saveTableMetadata(deviceName, "tail_number", tailNumber);
+            dbUtils.saveTableMetadata(deviceName, "tail_number", aircraftNumber);
             dbUtils.saveTableMetadata(deviceName, "column_types", analysis.getColumnTypes().toString());
             dbUtils.saveTableMetadata(deviceName, "numeric_columns", String.join(",", analysis.getNumericColumns()));
         } catch (Exception e) {

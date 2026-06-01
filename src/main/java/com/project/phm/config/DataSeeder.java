@@ -144,13 +144,13 @@ public class DataSeeder {
 
     private void insertConfig(String tailNumber, String modelCode, String airline,
                               String configVersion, String status) {
-        AircraftConfig config = new AircraftConfig();
-        config.setTailNumber(tailNumber);
-        config.setModelCode(modelCode);
-        config.setAirline(airline);
-        config.setConfigVersion(configVersion);
-        config.setStatus(status);
-        aircraftConfigMapper.insert(config);
+        Aircraft aircraft = new Aircraft();
+        aircraft.setAircraftNumber(tailNumber);
+        aircraft.setModelCode(modelCode);
+        aircraft.setAirline(airline);
+        aircraft.setConfigVersion(configVersion);
+        aircraft.setStatus(status);
+        aircraftConfigMapper.insert(aircraft);
     }
 
     private long insertItem(String modelCode, Long parentId, String ata, String sys,
@@ -238,7 +238,7 @@ public class DataSeeder {
 
     private void insertHealth(String tailNo, Long itemId, String type, String name, String value, String conf, String time) {
         HealthRecord record = new HealthRecord();
-        record.setTailNumber(tailNo);
+        record.setAircraftNumber(tailNo);
         record.setItemId(itemId);
         record.setRecordType(type);
         record.setIndicatorName(name);
@@ -250,7 +250,7 @@ public class DataSeeder {
 
     private void insertMapping(String tailNo, Long itemId, String tableName, String dataType, String time) {
         ConfigDataMapping mapping = new ConfigDataMapping();
-        mapping.setTailNumber(tailNo);
+        mapping.setAircraftNumber(tailNo);
         mapping.setItemId(itemId);
         mapping.setCsvTableName(tableName);
         mapping.setDataType(dataType);
