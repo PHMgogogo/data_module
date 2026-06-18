@@ -17,7 +17,6 @@ public class ConfigDataMapping {
     private String aircraftNumber;
     private Long itemId;            // 构型项目 → ConfigItem
     private String csvTableName;    // 关联的 csv_xxx 表名
-    private String dataType;        // 数据类型: DIAGNOSIS / EVALUATION / PREDICTION / RAW
     private String dataTime;        // 数据时间
     private String createdAt;       // 创建时间
 
@@ -51,14 +50,6 @@ public class ConfigDataMapping {
 
     public void setCsvTableName(String csvTableName) {
         this.csvTableName = csvTableName;
-    }
-
-    public String getDataType() {
-        return dataType;
-    }
-
-    public void setDataType(String dataType) {
-        this.dataType = dataType;
     }
 
     public String getDataTime() {

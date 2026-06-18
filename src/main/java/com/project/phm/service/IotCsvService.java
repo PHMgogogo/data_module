@@ -68,11 +68,9 @@ public class IotCsvService {
      * @param deviceName IoTDB设备名（去掉csv_前缀）
      * @param aircraftNumber 机号（必须，用于构型关联）
      * @param parentItemId 父级构型项目ID（模板创建到此节点下）
-     * @param dataType   数据类型 RAW/DIAGNOSIS/EVALUATION/PREDICTION
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String deviceName,
-                                          String aircraftNumber, Long parentItemId,
-                                          String dataType) throws Exception {
+                                          String aircraftNumber, Long parentItemId) throws Exception {
         long startTime = System.currentTimeMillis();
 
         // 1. 解析CSV全部数据
@@ -178,7 +176,6 @@ public class IotCsvService {
         if (aircraftNumber != null && !aircraftNumber.trim().isEmpty()) {
             configService.createDataMapping(
                 aircraftNumber, parentItemId, cleanDeviceName,
-                dataType != null ? dataType : "RAW",
                 new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
             );
         }
