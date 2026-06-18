@@ -35,3 +35,11 @@ build/
 ### Node.js ###
 node_modules/
 package-lock.json
+
+### Build artifacts ###
+*.jar
+*.zip
+
+### Documentation ###
+*.md
+部署/

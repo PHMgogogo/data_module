@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ping *)",
+      "Bash(curl *)",
+      "Bash(nslookup *)",
+      "Bash(git config *)",
+      "Bash(GIT_CURL_VERBOSE=1 git ls-remote https://github.com/PHMgogogo/data_module.git)",
+      "Bash(GIT_CURL_VERBOSE=1 git push --dry-run)",
+      "Bash(ssh *)",
+      "Bash(git -C \"I:/XHR/phm\" status --short)",
+      "Bash(grep -i \"\\\\.md$\")",
+      "Bash(mvn compile *)",
+      "Bash(taskkill /F /PID 12568)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill //F //PID 17760)",
+      "Bash(cat)",
+      "Bash(python -m json.tool)",
+      "Read(//tmp/**)"
+    ]
+  }
+}

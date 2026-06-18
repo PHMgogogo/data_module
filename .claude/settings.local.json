@@ -13,7 +13,9 @@
       "Bash(mvn compile *)",
       "Bash(mvn dependency:tree -Dincludes=com.baomidou:mybatis-plus-boot-starter)",
       "Bash(javap ~/.m2/repository/com/baomidou/mybatis-plus-annotation/3.5.3.1/mybatis-plus-annotation-3.5.3.1.jar com/baomidou/mybatisplus/annotation/IdType)",
-      "Bash(javap -cp ~/.m2/repository/com/baomidou/mybatis-plus-annotation/3.5.3.1/mybatis-plus-annotation-3.5.3.1.jar com.baomidou.mybatisplus.annotation.IdType)"
+      "Bash(javap -cp ~/.m2/repository/com/baomidou/mybatis-plus-annotation/3.5.3.1/mybatis-plus-annotation-3.5.3.1.jar com.baomidou.mybatisplus.annotation.IdType)",
+      "Bash(mvn clean *)",
+      "WebFetch(domain:eco.dameng.com)"
     ]
   }
 }
