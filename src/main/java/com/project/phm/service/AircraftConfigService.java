@@ -231,16 +231,19 @@ public class AircraftConfigService {
 
     // ==================== 数据关联 ====================
 
+    public ConfigDataMapping getMapping(Long mappingId) {
+        return configDataMappingMapper.selectById(mappingId);
+    }
+
     /**
      * 创建CSV数据到飞机构型的关联记录
      */
     public void createDataMapping(String aircraftNumber, Long itemId, String csvTableName,
-                                  String dataType, String dataTime) {
+                                  String dataTime) {
         ConfigDataMapping mapping = new ConfigDataMapping();
         mapping.setAircraftNumber(aircraftNumber);
         mapping.setItemId(itemId);
         mapping.setCsvTableName(csvTableName);
-        mapping.setDataType(dataType != null ? dataType : "RAW");
         mapping.setDataTime(dataTime);
         configDataMappingMapper.insert(mapping);
     }

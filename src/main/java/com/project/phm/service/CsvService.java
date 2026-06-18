@@ -57,7 +57,7 @@ public class CsvService {
      * 上传CSV文件并入库（默认不带飞机构型关联）
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String tableName) throws Exception {
-        return uploadCsv(file, tableName, null, null, null);
+        return uploadCsv(file, tableName, null, null);
     }
 
     /**
@@ -67,12 +67,10 @@ public class CsvService {
      * @param tableName    达梦表名（需以 csv_ 开头）
      * @param aircraftNumber 机号（用于构型关联，可选）
      * @param parentItemId  父级构型项目ID（可选）
-     * @param dataType      数据类型 RAW/DIAGNOSIS/EVALUATION/PREDICTION（可选）
      * @return 处理结果
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String tableName,
-                                          String aircraftNumber, Long parentItemId,
-                                          String dataType) throws Exception {
+                                          String aircraftNumber, Long parentItemId) throws Exception {
         long startTime = System.currentTimeMillis();
 
         // 验证表名
@@ -152,7 +150,6 @@ public class CsvService {
             try {
                 aircraftConfigService.createDataMapping(
                     aircraftNumber, parentItemId, deviceName,
-                    dataType != null ? dataType : "RAW",
                     new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
                 );
             } catch (Exception e) {
@@ -557,6 +554,51 @@ public class CsvService {
         }
         result.put("totalRows", data.size());
         return result;
+    }
+
+    /**
+     * 导出指定列的子集 CSV
+     *
+     * @param tableName      表名（需以 csv_ 开头）
+     * @param columnNames    要导出的列名列表
+     * @param outputStream   输出流
+     */
+    public void exportCsvColumns(String tableName, List<String> columnNames, OutputStream outputStream) throws Exception {
+        validateTableName(tableName);
+
+        // 校验请求的列名都存在于表中
+        List<String> allColumns = dbUtils.getColumnNames(tableName);
+        List<String> missingCols = columnNames.stream()
+                .filter(c -> allColumns.stream().noneMatch(col -> col.equalsIgnoreCase(c)))
+                .collect(Collectors.toList());
+        if (!missingCols.isEmpty()) {
+            throw new IllegalArgumentException("列不存在: " + String.join(", ", missingCols));
+        }
+
+        // 构建 SELECT 查询（使用原始大小写列名）
+        String colList = columnNames.stream()
+                .map(String::toUpperCase)
+                .collect(Collectors.joining(", "));
+        String sql = "SELECT " + colList + " FROM " + tableName + " ORDER BY ID";
+        List<Map<String, Object>> rows = dbUtils.queryForList(sql);
+
+        // 组装 CSV 数据（表头 + 数据行）
+        List<String[]> csvData = new ArrayList<>();
+        csvData.add(columnNames.toArray(new String[0]));
+        for (Map<String, Object> row : rows) {
+            String[] rowData = new String[columnNames.size()];
+            for (int i = 0; i < columnNames.size(); i++) {
+                String col = columnNames.get(i);
+                Object value = row.get(col.toUpperCase());
+                if (value == null) {
+                    value = row.get(col.toLowerCase());
+                }
+                rowData[i] = value != null ? value.toString() : "";
+            }
+            csvData.add(rowData);
+        }
+
+        writeCsvToStream(csvData, outputStream);
     }
 
     /**

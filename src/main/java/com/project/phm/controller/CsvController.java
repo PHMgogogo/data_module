@@ -1,6 +1,8 @@
 package com.project.phm.controller;
 
+import com.project.phm.entity.ConfigDataMapping;
 import com.project.phm.entity.ValidationResult;
+import com.project.phm.service.AircraftConfigService;
 import com.project.phm.service.CsvService;
 import com.project.phm.utils.CsvColumnAnalyzer;
 import com.project.phm.utils.CsvColumnAnalyzer.AnalysisResult;
@@ -37,15 +39,18 @@ public class CsvController {
     private final DataValidationUtils validationUtils;
     private final DbUtils dbUtils;
     private final CsvColumnAnalyzer columnAnalyzer;
+    private final AircraftConfigService aircraftConfigService;
 
     public CsvController(CsvService csvService,
                          DataValidationUtils validationUtils,
                          DbUtils dbUtils,
-                         CsvColumnAnalyzer columnAnalyzer) {
+                         CsvColumnAnalyzer columnAnalyzer,
+                         AircraftConfigService aircraftConfigService) {
         this.csvService = csvService;
         this.validationUtils = validationUtils;
         this.dbUtils = dbUtils;
         this.columnAnalyzer = columnAnalyzer;
+        this.aircraftConfigService = aircraftConfigService;
     }
 
     /**
@@ -101,7 +106,7 @@ public class CsvController {
     /**
      * 上传CSV数据 → 达梦数据库 csv_xxx 表 + 绑定飞机构型
      */
-    @Operation(summary = "上传CSV文件并入库", 
+    @Operation(summary = "上传CSV文件并入库",
             description = "解析CSV文件并保存到达梦数据库的 `csv_xxx` 表，同时：\n" +
                     "- 自动建表（如不存在）\n" +
                     "- 计算原始数据的SHA-256哈希（用于后续导出一致性校验）\n" +
@@ -114,14 +119,13 @@ public class CsvController {
             @Parameter(description = "CSV文件", required = true) @RequestParam("file") MultipartFile file,
             @Parameter(description = "表名（会自动加csv_前缀）", required = true, example = "engine_vibration") @RequestParam("tableName") String tableName,
             @Parameter(description = "关联机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
-            @Parameter(description = "构型项目ID（可选）", example = "3") @RequestParam(value = "parentItemId", required = false) Long parentItemId,
-            @Parameter(description = "数据类型（DIAGNOSIS/EVALUATION/PREDICTION/RAW）", example = "RAW") @RequestParam(value = "dataType", required = false) String dataType) {
+            @Parameter(description = "构型项目ID（可选）", example = "3") @RequestParam(value = "parentItemId", required = false) Long parentItemId) {
         try {
             // 确保表名以 csv_ 开头
             String fullTableName = tableName.toLowerCase().startsWith("csv_") ? tableName : "csv_" + tableName;
 
             Map<String, Object> result = csvService.uploadCsv(
-                    file, fullTableName, aircraftNumber, parentItemId, dataType);
+                    file, fullTableName, aircraftNumber, parentItemId);
 
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
@@ -203,15 +207,39 @@ public class CsvController {
     /**
      * 获取达梦 csv_xxx 表数据总览
      */
-    @Operation(summary = "获取设备数据总览", 
-            description = "获取指定 csv_xxx 表的数据总览，包含行数、列数、列类型等信息。")
+    @Operation(summary = "获取设备数据总览",
+            description = "获取指定 csv_xxx 表的数据总览，包含行数、列数、列类型等信息。\n\n" +
+                    "**传参方式**：\n" +
+                    "- 传 `mappingId`：从构型关联自动解析机号 + 表名（推荐）\n" +
+                    "- 传 `aircraftNumber` + `deviceName`：直接指定（兼容旧版）")
     @Tag(name = "04-CSV数据管理")
     @GetMapping("/overview")
     public ResponseEntity<?> getOverview(
-            @Parameter(description = "机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
-            @Parameter(description = "设备名", required = true, example = "engine_vibration") @RequestParam("deviceName") String deviceName) {
+            @Parameter(description = "构型关联ID（与aircraftNumber+deviceName二选一）", example = "1") @RequestParam(value = "mappingId", required = false) Long mappingId,
+            @Parameter(description = "机号（与mappingId二选一）", example = "B-1234") @RequestParam(value = "aircraftNumber", required = false) String aircraftNumber,
+            @Parameter(description = "设备名（与mappingId二选一）", example = "engine_vibration") @RequestParam(value = "deviceName", required = false) String deviceName) {
         try {
-            String fullTableName = "csv_" + deviceName;
+            // mappingId 优先：自动解析表名和机号
+            if (mappingId != null) {
+                ConfigDataMapping mapping = aircraftConfigService.getMapping(mappingId);
+                if (mapping == null) {
+                    return ResponseEntity.badRequest().body(errorMap("构型关联不存在: " + mappingId));
+                }
+                aircraftNumber = mapping.getAircraftNumber();
+                deviceName = mapping.getCsvTableName();
+                // csvTableName 可能已经带 csv_ 前缀
+                if (deviceName != null && deviceName.toLowerCase().startsWith("csv_")) {
+                    // 已经是完整表名
+                } else {
+                    deviceName = "csv_" + deviceName;
+                }
+            }
+
+            if (aircraftNumber == null || deviceName == null) {
+                return ResponseEntity.badRequest().body(errorMap("请提供 mappingId，或 aircraftNumber + deviceName"));
+            }
+
+            String fullTableName = deviceName.toLowerCase().startsWith("csv_") ? deviceName : "csv_" + deviceName;
             if (!dbUtils.tableExists(fullTableName.toUpperCase())) {
                 Map<String, Object> empty = new LinkedHashMap<>();
                 empty.put("deviceName", deviceName);
@@ -440,6 +468,40 @@ public class CsvController {
             headers.set("X-Is-Consistent", String.valueOf(validation.get("isConsistent")));
             headers.set("X-Original-Rows", String.valueOf(displayOriginalRows));
             headers.set("X-Actual-Rows", String.valueOf(displayActualRows));
+
+            return ResponseEntity.ok().headers(headers).body(csvBytes);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(null);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(null);
+        }
+    }
+
+    // ==================== 列子集导出 ====================
+
+    @Operation(summary = "导出指定列的子集CSV",
+            description = "按列名列表导出 csv_xxx 表的指定列子集为 CSV 文件。\n\n" +
+                    "**示例**：`/csv/export-columns?tableName=csv_engine_vibration&columns=fan_vibration,egt_actual`\n\n" +
+                    "**返回**：`text/csv` 文件流，仅包含请求的列。")
+    @Tag(name = "04-CSV数据管理")
+    @GetMapping("/export-columns")
+    public ResponseEntity<byte[]> exportCsvColumns(
+            @Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName,
+            @Parameter(description = "列名列表（逗号分隔）", required = true, example = "fan_vibration,egt_actual") @RequestParam("columns") String columns) {
+        try {
+            List<String> columnNames = Arrays.asList(columns.split("\\s*,\\s*"));
+            if (columnNames.isEmpty()) {
+                return ResponseEntity.badRequest().body(null);
+            }
+
+            ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+            csvService.exportCsvColumns(tableName, columnNames, outputStream);
+            byte[] csvBytes = outputStream.toByteArray();
+
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.parseMediaType("text/csv; charset=UTF-8"));
+            headers.setContentDispositionFormData("attachment", tableName + "_subset.csv");
+            headers.setContentLength(csvBytes.length);
 
             return ResponseEntity.ok().headers(headers).body(csvBytes);
         } catch (IllegalArgumentException e) {
