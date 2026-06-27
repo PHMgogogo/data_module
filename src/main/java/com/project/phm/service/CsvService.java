@@ -78,6 +78,16 @@ public class CsvService {
             throw new IllegalArgumentException("表名必须以csv_开头");
         }
 
+        // 校验表名是否已存在
+        if (dbUtils.tableExists(tableName)) {
+            String existingTailNumber = dbUtils.getTableMetadata(tableName, "tail_number");
+            String message = String.format("表 [%s] 已存在", tableName);
+            if (existingTailNumber != null) {
+                message += String.format(" (已关联机号: %s)", existingTailNumber);
+            }
+            throw new IllegalArgumentException(message);
+        }
+
         // 1. 列类型分析（依赖 MultipartFile 可重复读取的特性）
         AnalysisResult analysis = columnAnalyzer.analyze(file);
 
@@ -146,7 +156,7 @@ public class CsvService {
         Map<String, Object> storageValidation = validationUtils.validateStorage(expectedRows, successCount);
 
         // 9. 创建构型数据关联
-        if (aircraftNumber != null && !aircraftNumber.trim().isEmpty() && parentItemId != null) {
+        if ((aircraftNumber != null && !aircraftNumber.trim().isEmpty()) || parentItemId != null) {
             try {
                 aircraftConfigService.createDataMapping(
                     aircraftNumber, parentItemId, deviceName,
@@ -217,6 +227,12 @@ public class CsvService {
      */
     public void dropTable(String tableName) {
         validateTableName(tableName);
+        // 1. 先删除关联的构型映射记录
+        String deviceName = tableName.startsWith("csv_") ? tableName.substring(4) : tableName;
+        aircraftConfigService.deleteMappingsByCsvTableName(deviceName);
+        // 2. 再删除元数据
+        dbUtils.deleteTableMetadata(tableName);
+        // 3. 最后删除表
         dbUtils.dropTable(tableName);
     }
 

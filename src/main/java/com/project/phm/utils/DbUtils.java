@@ -218,6 +218,15 @@ public class DbUtils {
     }
 
     /**
+     * 删除表的元数据
+     * @param tableName 表名
+     */
+    public void deleteTableMetadata(String tableName) {
+        String sql = "DELETE FROM csv_table_metadata WHERE table_name = ?";
+        jdbcTemplate.update(sql, tableName);
+    }
+
+    /**
      * 删除表
      * @param tableName 表名
      */

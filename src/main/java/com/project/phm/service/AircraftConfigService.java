@@ -262,4 +262,13 @@ public class AircraftConfigService {
                         .orderByDesc(ConfigDataMapping::getCreatedAt));
     }
 
+    /**
+     * 删除指定CSV表的所有关联记录
+     */
+    public void deleteMappingsByCsvTableName(String csvTableName) {
+        configDataMappingMapper.delete(
+                Wrappers.<ConfigDataMapping>lambdaQuery()
+                        .eq(ConfigDataMapping::getCsvTableName, csvTableName));
+    }
+
 }

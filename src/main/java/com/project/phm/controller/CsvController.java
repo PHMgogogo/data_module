@@ -112,7 +112,8 @@ public class CsvController {
                     "- 计算原始数据的SHA-256哈希（用于后续导出一致性校验）\n" +
                     "- 保存到元数据表 csv_table_metadata\n" +
                     "- 绑定到飞机构型（关联机号 + 构型项目）\n\n" +
-                    "**注意**：表名会自动加 `csv_` 前缀（如传 `engine` 会变成 `csv_engine`）")
+                    "**注意**：表名会自动加 `csv_` 前缀（如传 `engine` 会变成 `csv_engine`）\n" +
+                    "**注意**：如果表名已存在，会报错防止重复上传")
     @Tag(name = "04-CSV数据管理")
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> uploadCsv(
@@ -185,9 +186,13 @@ public class CsvController {
 
             List<Map<String, String>> devices = new ArrayList<>();
             for (Map<String, Object> row : rows) {
+                String rawTableName = (String) row.get("table_name");
+                // 双重保险：检查表是否实际存在
+                if (!dbUtils.tableExists(rawTableName)) {
+                    continue;
+                }
                 Map<String, String> d = new LinkedHashMap<>();
                 String tn = (String) row.get("tail_number");
-                String rawTableName = (String) row.get("table_name");
                 // 去掉 csv_ 前缀作为设备名
                 String deviceName = rawTableName.toLowerCase().startsWith("csv_")
                         ? rawTableName.substring(4) : rawTableName;
@@ -459,9 +464,17 @@ public class CsvController {
             csvService.writeCsvToStream(exportedData, outputStream);
             byte[] csvBytes = outputStream.toByteArray();
 
+            // 正确处理中文文件名编码，使用 Spring 的 ContentDisposition
+            String filename = tableName + ".csv";
+
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType("text/csv; charset=UTF-8"));
-            headers.setContentDispositionFormData("attachment", tableName + ".csv");
+            // 使用 ContentDisposition 来正确处理 filename 和 filename*
+            headers.setContentDisposition(
+                    org.springframework.http.ContentDisposition.attachment()
+                            .filename(filename, java.nio.charset.StandardCharsets.UTF_8)
+                            .build()
+            );
             headers.setContentLength(csvBytes.length);
             headers.set("X-Validation-Status", (String) validation.get("status"));
             headers.set("X-Validation-Message", java.net.URLEncoder.encode((String) validation.get("message"), "UTF-8"));
@@ -498,9 +511,17 @@ public class CsvController {
             csvService.exportCsvColumns(tableName, columnNames, outputStream);
             byte[] csvBytes = outputStream.toByteArray();
 
+            // 正确处理中文文件名编码，使用 Spring 的 ContentDisposition
+            String filename = tableName + "_subset.csv";
+
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.parseMediaType("text/csv; charset=UTF-8"));
-            headers.setContentDispositionFormData("attachment", tableName + "_subset.csv");
+            // 使用 ContentDisposition 来正确处理 filename 和 filename*
+            headers.setContentDisposition(
+                    org.springframework.http.ContentDisposition.attachment()
+                            .filename(filename, java.nio.charset.StandardCharsets.UTF_8)
+                            .build()
+            );
             headers.setContentLength(csvBytes.length);
 
             return ResponseEntity.ok().headers(headers).body(csvBytes);

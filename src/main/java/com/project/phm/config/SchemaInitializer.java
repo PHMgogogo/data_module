@@ -92,8 +92,8 @@ public class SchemaInitializer {
     private void createConfigDataMappingTable() {
         String sql = "CREATE TABLE IF NOT EXISTS config_data_mapping ("
                 + "mapping_id INT IDENTITY(1,1) NOT NULL, "
-                + "aircraft_number VARCHAR(20) NOT NULL, "
-                + "item_id INT NOT NULL, "
+                + "aircraft_number VARCHAR(20), "
+                + "item_id INT, "
                 + "csv_table_name VARCHAR(200), "
                 + "data_type VARCHAR(50) DEFAULT 'RAW', "
                 + "data_time DATETIME, "
@@ -110,8 +110,8 @@ public class SchemaInitializer {
     private void createHealthRecordTable() {
         String sql = "CREATE TABLE IF NOT EXISTS health_record ("
                 + "record_id INT IDENTITY(1,1) NOT NULL, "
-                + "aircraft_number VARCHAR(20) NOT NULL, "
-                + "item_id INT NOT NULL, "
+                + "aircraft_number VARCHAR(20), "
+                + "item_id INT, "
                 + "record_type VARCHAR(20), "
                 + "indicator_name VARCHAR(200), "
                 + "indicator_value VARCHAR(500), "

@@ -15,7 +15,7 @@ public class HealthRecord {
 
     @TableId(type = IdType.AUTO)
     private Long recordId;          // PK, 自增
-    private String tailNumber;      // 机号 → AircraftConfig
+    private String aircraftNumber;  // 机号 → AircraftConfig
     private Long itemId;            // 构型项目 → ConfigItem
     private String recordType;      // 记录类型: DIAGNOSIS / EVALUATION / PREDICTION
     private String indicatorName;   // 指标名称, e.g. "振动值", "温度偏差"
@@ -33,12 +33,12 @@ public class HealthRecord {
         this.recordId = recordId;
     }
 
-    public String getTailNumber() {
-        return tailNumber;
+    public String getAircraftNumber() {
+        return aircraftNumber;
     }
 
-    public void setTailNumber(String tailNumber) {
-        this.tailNumber = tailNumber;
+    public void setAircraftNumber(String aircraftNumber) {
+        this.aircraftNumber = aircraftNumber;
     }
 
     public Long getItemId() {
