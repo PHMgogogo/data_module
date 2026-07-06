@@ -50,7 +50,7 @@ public class OpenApiConfig {
                 // 飞机构型管理模块
                 new Tag().name("01-机型管理").description("飞机机型的增删查操作 /aircraft/models"),
                 new Tag().name("02-飞机单机管理").description("飞机单机（按机号）的增删查操作 /aircraft/plane"),
-                new Tag().name("03-构型项目管理").description("ATA章节树形结构：系统→子系统→设备 /aircraft/config-items，及数据关联查询 /aircraft/mappings"),
+                new Tag().name("03-构型项目管理").description("GJB章节树形结构：系统→子系统→设备 /aircraft/config-items，及数据关联查询 /aircraft/mappings"),
                 new Tag().name("04-CSV数据管理").description("CSV上传、查询、分析、导出等所有CSV相关操作 /csv/*")
         );
     }

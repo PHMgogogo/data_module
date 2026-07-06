@@ -3,6 +3,7 @@ package com.project.phm.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 /**
@@ -13,7 +14,7 @@ import io.swagger.v3.oas.annotations.media.Schema;
  *   SUBSYSTEM  → 子系统级     (ataChapter="72-50", systemName="发动机", subSystemName="低压压气机")
  *   EQUIPMENT  → 设备/LRU级  (ataChapter="72-50", equipmentName="振动传感器", partNumber="P/N 12345")
  */
-@Schema(description = "构型项目实体（ATA章节树形结构）")
+@Schema(description = "构型项目实体（GJB章节树形结构）")
 @TableName("config_item")
 public class ConfigItem {
 
@@ -27,7 +28,8 @@ public class ConfigItem {
     @Schema(description = "父级项目ID（树形结构，根节点为null）", example = "null")
     private Long parentItemId;      // 父级项目（自关联，树形结构）
 
-    @Schema(description = "ATA章节号", example = "72-00")
+    @Schema(description = "GJB章节号", example = "72-00")
+    @JsonProperty("gjbChapter")
     private String ataChapter;      // ATA章节号, e.g. "72-00"
 
     @Schema(description = "系统名称", example = "发动机")

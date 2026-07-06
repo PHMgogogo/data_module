@@ -154,7 +154,7 @@ public class AircraftController {
 
     @Operation(summary = "获取构型项目列表",
             description = "获取指定机型下的所有构型项目（扁平列表）。\n\n" +
-                    "构型项目按ATA章节组织：SYSTEM（系统）→ SUBSYSTEM（子系统）→ EQUIPMENT/LRU（设备）")
+                    "构型项目按GJB章节组织：SYSTEM（系统）→ SUBSYSTEM（子系统）→ EQUIPMENT/LRU（设备）")
     @Tag(name = "03-构型项目管理")
     @GetMapping("/config-items")
     public ResponseEntity<?> listConfigItems(@Parameter(description = "机型代码", required = true, example = "B737-800")
@@ -199,7 +199,7 @@ public class AircraftController {
                     "{\n" +
                     "  \"modelCode\": \"B737-800\",\n" +
                     "  \"parentItemId\": null,\n" +
-                    "  \"ataChapter\": \"72-00\",\n" +
+                    "  \"gjbChapter\": \"72-00\",\n" +
                     "  \"systemName\": \"发动机\",\n" +
                     "  \"itemType\": \"SYSTEM\"\n" +
                     "}\n" +
@@ -209,7 +209,7 @@ public class AircraftController {
                     "{\n" +
                     "  \"modelCode\": \"B737-800\",\n" +
                     "  \"parentItemId\": 1,\n" +
-                    "  \"ataChapter\": \"72-50\",\n" +
+                    "  \"gjbChapter\": \"72-50\",\n" +
                     "  \"systemName\": \"发动机\",\n" +
                     "  \"subSystemName\": \"低压压气机\",\n" +
                     "  \"itemType\": \"SUBSYSTEM\"\n" +
@@ -220,7 +220,7 @@ public class AircraftController {
                     "{\n" +
                     "  \"modelCode\": \"B737-800\",\n" +
                     "  \"parentItemId\": 2,\n" +
-                    "  \"ataChapter\": \"72-50\",\n" +
+                    "  \"gjbChapter\": \"72-50\",\n" +
                     "  \"equipmentName\": \"振动传感器\",\n" +
                     "  \"partNumber\": \"P/N 12345\",\n" +
                     "  \"itemType\": \"EQUIPMENT\"\n" +

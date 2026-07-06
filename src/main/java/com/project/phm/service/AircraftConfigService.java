@@ -168,7 +168,7 @@ public class AircraftConfigService {
     private Map<String, Object> buildTreeNode(ConfigItem node, List<ConfigItem> allItems) {
         Map<String, Object> nodeMap = new LinkedHashMap<>();
         nodeMap.put("itemId", node.getItemId());
-        nodeMap.put("ataChapter", node.getAtaChapter());
+        nodeMap.put("gjbChapter", node.getAtaChapter());
         nodeMap.put("systemName", node.getSystemName());
         nodeMap.put("subSystemName", node.getSubSystemName());
         nodeMap.put("equipmentName", node.getEquipmentName());
