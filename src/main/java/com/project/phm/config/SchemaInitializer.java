@@ -30,6 +30,7 @@ public class SchemaInitializer {
         createAircraftConfigTable();
         createConfigItemTable();
         createConfigDataMappingTable();
+        createSortieTable();
         createHealthRecordTable();
         log.info("=== 飞机构型相关表结构初始化完成 ===");
     }
@@ -94,6 +95,7 @@ public class SchemaInitializer {
                 + "mapping_id INT IDENTITY(1,1) NOT NULL, "
                 + "aircraft_number VARCHAR(20), "
                 + "item_id INT, "
+                + "sortie_id INT, "
                 + "csv_table_name VARCHAR(200), "
                 + "data_type VARCHAR(50) DEFAULT 'RAW', "
                 + "data_time DATETIME, "
@@ -102,6 +104,28 @@ public class SchemaInitializer {
                 + ")";
         jdbcTemplate.execute(sql);
         log.info("表 config_data_mapping 已就绪");
+    }
+
+    /**
+     * 架次表（每次飞行任务）
+     */
+    private void createSortieTable() {
+        String sql = "CREATE TABLE IF NOT EXISTS sortie ("
+                + "sortie_id INT IDENTITY(1,1) NOT NULL, "
+                + "aircraft_number VARCHAR(20) NOT NULL, "
+                + "sortie_number VARCHAR(100), "
+                + "flight_date VARCHAR(20), "
+                + "takeoff_time VARCHAR(20), "
+                + "landing_time VARCHAR(20), "
+                + "origin VARCHAR(100), "
+                + "destination VARCHAR(100), "
+                + "pilot VARCHAR(100), "
+                + "remark VARCHAR(500), "
+                + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
+                + "PRIMARY KEY (sortie_id)"
+                + ")";
+        jdbcTemplate.execute(sql);
+        log.info("表 sortie 已就绪");
     }
 
     /**

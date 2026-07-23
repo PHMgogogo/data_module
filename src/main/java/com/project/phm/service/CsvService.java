@@ -3,6 +3,7 @@ package com.project.phm.service;
 import com.opencsv.CSVReader;
 import com.opencsv.CSVWriter;
 import com.project.phm.entity.ConfigItem;
+import com.project.phm.entity.Sortie;
 import com.project.phm.utils.*;
 import com.project.phm.utils.CsvColumnAnalyzer.AnalysisResult;
 import org.slf4j.Logger;
@@ -61,17 +62,27 @@ public class CsvService {
     }
 
     /**
-     * 上传CSV文件并入库（含飞机构型关联）
+     * 上传CSV文件并入库（含飞机构型 + 架次关联）
      *
      * @param file         CSV文件
      * @param tableName    达梦表名（需以 csv_ 开头）
-     * @param aircraftNumber 机号（用于构型关联，可选）
-     * @param parentItemId  父级构型项目ID（可选）
+     * @param parentItemId 父级构型项目ID（可选）
+     * @param sortieId     架次ID（可选，提供后自动从架次获取机号）
      * @return 处理结果
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String tableName,
-                                          String aircraftNumber, Long parentItemId) throws Exception {
+                                          Long parentItemId, Long sortieId) throws Exception {
         long startTime = System.currentTimeMillis();
+
+        // 从架次自动解析机号
+        String aircraftNumber = null;
+        if (sortieId != null) {
+            Sortie sortie = aircraftConfigService.getSortie(sortieId);
+            if (sortie == null) {
+                throw new IllegalArgumentException("架次不存在: " + sortieId);
+            }
+            aircraftNumber = sortie.getAircraftNumber();
+        }
 
         // 验证表名
         if (!CsvUtils.isValidTableName(tableName)) {
@@ -159,7 +170,7 @@ public class CsvService {
         if ((aircraftNumber != null && !aircraftNumber.trim().isEmpty()) || parentItemId != null) {
             try {
                 aircraftConfigService.createDataMapping(
-                    aircraftNumber, parentItemId, deviceName,
+                    aircraftNumber, parentItemId, sortieId, deviceName,
                     new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
                 );
             } catch (Exception e) {

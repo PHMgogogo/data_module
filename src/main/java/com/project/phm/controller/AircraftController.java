@@ -2,6 +2,7 @@ package com.project.phm.controller;
 
 import com.project.phm.entity.*;
 import com.project.phm.service.AircraftConfigService;
+import com.project.phm.service.CsvService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -20,9 +21,11 @@ import java.util.Map;
 public class AircraftController {
 
     private final AircraftConfigService configService;
+    private final CsvService csvService;
 
-    public AircraftController(AircraftConfigService configService) {
+    public AircraftController(AircraftConfigService configService, CsvService csvService) {
         this.configService = configService;
+        this.csvService = csvService;
     }
 
     // ==================== 机型管理 ====================
@@ -261,24 +264,113 @@ public class AircraftController {
 
     @Operation(summary = "查询CSV数据与构型的关联",
             description = "查询 csv_xxx 数据表与飞机构型的关联关系（config_data_mapping表）。\n\n" +
-                    "**二选一参数**：\n" +
-                    "- 传 `aircraftNumber`：查询某机号关联的所有数据表\n" +
+                    "**筛选参数（二选一）**：\n" +
+                    "- 传 `sortieId`：查询某架次关联的所有数据表\n" +
                     "- 传 `itemId`：查询某构型项目关联的所有数据表")
     @Tag(name = "03-构型项目管理")
     @GetMapping("/mappings")
     public ResponseEntity<?> listMappings(
-            @Parameter(description = "机号（与itemId二选一）", example = "B-1234") @RequestParam(value = "aircraftNumber", required = false) String aircraftNumber,
-            @Parameter(description = "构型项目ID（与aircraftNumber二选一）", example = "3") @RequestParam(value = "itemId", required = false) Long itemId) {
+            @Parameter(description = "架次ID", example = "1") @RequestParam(value = "sortieId", required = false) Long sortieId,
+            @Parameter(description = "构型项目ID", example = "3") @RequestParam(value = "itemId", required = false) Long itemId) {
         try {
+            if (sortieId != null) {
+                return ResponseEntity.ok(configService.listMappingsBySortie(sortieId));
+            }
             if (itemId != null) {
                 return ResponseEntity.ok(configService.listMappingsByItem(itemId));
             }
-            if (aircraftNumber != null) {
-                return ResponseEntity.ok(configService.listMappingsByAircraftNumber(aircraftNumber));
-            }
-            return ResponseEntity.badRequest().body(errorMap("请提供 aircraftNumber 或 itemId 参数"));
+            return ResponseEntity.badRequest().body(errorMap("请提供 sortieId 或 itemId 参数"));
         } catch (Exception e) {
             return ResponseEntity.status(500).body(errorMap("查询关联数据失败: " + e.getMessage()));
+        }
+    }
+
+    // ==================== 架次管理 ====================
+
+    @Operation(summary = "获取某单机下的架次列表",
+            description = "获取指定单机的所有架次列表，按创建时间降序排列。")
+    @Tag(name = "04-架次管理")
+    @GetMapping("/sorties")
+    public ResponseEntity<?> listSorties(@Parameter(description = "机号", required = true, example = "B-1234")
+                                          @RequestParam("aircraftNumber") String aircraftNumber) {
+        try {
+            return ResponseEntity.ok(configService.listSortiesByAircraft(aircraftNumber));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("获取架次列表失败: " + e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "获取架次详情",
+            description = "根据架次ID获取详细信息。")
+    @Tag(name = "04-架次管理")
+    @GetMapping("/sorties/{sortieId}")
+    public ResponseEntity<?> getSortie(@Parameter(description = "架次ID", required = true, example = "1")
+                                        @PathVariable("sortieId") Long sortieId) {
+        try {
+            Sortie sortie = configService.getSortie(sortieId);
+            if (sortie == null) {
+                return ResponseEntity.badRequest().body(errorMap("架次不存在: " + sortieId));
+            }
+            return ResponseEntity.ok(sortie);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("获取架次详情失败: " + e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "添加架次",
+            description = "为指定单机添加一条架次（飞行任务）记录。\n\n" +
+                    "**请求示例**：\n" +
+                    "```json\n" +
+                    "{\n" +
+                    "  \"aircraftNumber\": \"B-1234\",\n" +
+                    "  \"sortieNumber\": \"CA1234-20260723\",\n" +
+                    "  \"flightDate\": \"2026-07-23\",\n" +
+                    "  \"takeoffTime\": \"10:30:00\",\n" +
+                    "  \"landingTime\": \"14:20:00\",\n" +
+                    "  \"origin\": \"北京首都\",\n" +
+                    "  \"destination\": \"上海浦东\",\n" +
+                    "  \"pilot\": \"张三\",\n" +
+                    "  \"remark\": \"\"\n" +
+                    "}\n" +
+                    "```")
+    @Tag(name = "04-架次管理")
+    @PostMapping("/sorties")
+    public ResponseEntity<?> addSortie(@RequestBody Sortie sortie) {
+        try {
+            configService.addSortie(sortie);
+            return ResponseEntity.ok(successMap("架次添加成功"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("添加架次失败: " + e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "删除架次",
+            description = "删除指定架次，同时级联删除该架次关联的所有CSV数据表（csv_xxx）和数据关联记录。")
+    @Tag(name = "04-架次管理")
+    @DeleteMapping("/sorties/{sortieId}")
+    public ResponseEntity<?> deleteSortie(@Parameter(description = "架次ID", required = true, example = "1")
+                                           @PathVariable("sortieId") Long sortieId) {
+        try {
+            // 1. 查出该架次关联的所有 csv_xxx 表，逐个删除
+            java.util.List<ConfigDataMapping> mappings = configService.listMappingsBySortie(sortieId);
+            for (ConfigDataMapping m : mappings) {
+                String tableName = "csv_" + m.getCsvTableName();
+                // 表可能已被手动删除，容错处理
+                try {
+                    csvService.dropTable(tableName);
+                } catch (IllegalArgumentException e) {
+                    // 表不存在则跳过
+                }
+            }
+            // 2. 删除架次及剩余关联记录
+            configService.removeSortie(sortieId);
+            return ResponseEntity.ok(successMap("架次删除成功"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("删除架次失败: " + e.getMessage()));
         }
     }
 

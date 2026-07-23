@@ -16,6 +16,7 @@ public class ConfigDataMapping {
     private Long mappingId;         // PK, 自增
     private String aircraftNumber;
     private Long itemId;            // 构型项目 → ConfigItem
+    private Long sortieId;          // 架次ID → Sortie（可选，为空表示旧数据）
     private String csvTableName;    // 关联的 csv_xxx 表名
     private String dataTime;        // 数据时间
     private String createdAt;       // 创建时间
@@ -42,6 +43,14 @@ public class ConfigDataMapping {
 
     public void setItemId(Long itemId) {
         this.itemId = itemId;
+    }
+
+    public Long getSortieId() {
+        return sortieId;
+    }
+
+    public void setSortieId(Long sortieId) {
+        this.sortieId = sortieId;
     }
 
     public String getCsvTableName() {
