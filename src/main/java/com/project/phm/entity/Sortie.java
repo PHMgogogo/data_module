@@ -28,26 +28,11 @@ public class Sortie {
     @Schema(description = "飞行日期", example = "2026-07-23")
     private String flightDate;
 
-    @Schema(description = "起飞时间", example = "10:30:00")
-    private String takeoffTime;
+    @Schema(description = "开始时间", example = "10:30:00")
+    private String startTime;
 
-    @Schema(description = "降落时间", example = "14:20:00")
-    private String landingTime;
-
-    @Schema(description = "起飞机场", example = "北京首都")
-    private String origin;
-
-    @Schema(description = "降落机场", example = "上海浦东")
-    private String destination;
-
-    @Schema(description = "飞行员", example = "张三")
-    private String pilot;
-
-    @Schema(description = "备注")
-    private String remark;
-
-    @Schema(description = "创建时间", example = "2026-07-23 10:00:00", accessMode = Schema.AccessMode.READ_ONLY)
-    private String createdAt;
+    @Schema(description = "结束时间", example = "14:20:00")
+    private String endTime;
 
     public Long getSortieId() { return sortieId; }
     public void setSortieId(Long sortieId) { this.sortieId = sortieId; }
@@ -61,24 +46,9 @@ public class Sortie {
     public String getFlightDate() { return flightDate; }
     public void setFlightDate(String flightDate) { this.flightDate = flightDate; }
 
-    public String getTakeoffTime() { return takeoffTime; }
-    public void setTakeoffTime(String takeoffTime) { this.takeoffTime = takeoffTime; }
+    public String getStartTime() { return startTime; }
+    public void setStartTime(String startTime) { this.startTime = startTime; }
 
-    public String getLandingTime() { return landingTime; }
-    public void setLandingTime(String landingTime) { this.landingTime = landingTime; }
-
-    public String getOrigin() { return origin; }
-    public void setOrigin(String origin) { this.origin = origin; }
-
-    public String getDestination() { return destination; }
-    public void setDestination(String destination) { this.destination = destination; }
-
-    public String getPilot() { return pilot; }
-    public void setPilot(String pilot) { this.pilot = pilot; }
-
-    public String getRemark() { return remark; }
-    public void setRemark(String remark) { this.remark = remark; }
-
-    public String getCreatedAt() { return createdAt; }
-    public void setCreatedAt(String createdAt) { this.createdAt = createdAt; }
+    public String getEndTime() { return endTime; }
+    public void setEndTime(String endTime) { this.endTime = endTime; }
 }

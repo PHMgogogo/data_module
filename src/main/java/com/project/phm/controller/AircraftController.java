@@ -98,6 +98,23 @@ public class AircraftController {
         }
     }
 
+    @Operation(summary = "按机号查询单机详情",
+            description = "根据机号获取指定单机的详细信息。")
+    @Tag(name = "02-飞机单机管理")
+    @GetMapping("/plane/{aircraftNumber}")
+    public ResponseEntity<?> getPlane(@Parameter(description = "机号", required = true, example = "B-1234")
+                                        @PathVariable("aircraftNumber") String aircraftNumber) {
+        try {
+            com.project.phm.entity.Aircraft plane = configService.getPlane(aircraftNumber);
+            if (plane == null) {
+                return ResponseEntity.badRequest().body(errorMap("单机不存在: " + aircraftNumber));
+            }
+            return ResponseEntity.ok(plane);
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("获取单机详情失败: " + e.getMessage()));
+        }
+    }
+
     @Operation(summary = "添加飞机单机",
             description = "为某架飞机（按机号）创建记录。\n\n" +
                     "**请求示例**：\n" +
@@ -325,12 +342,8 @@ public class AircraftController {
                     "  \"aircraftNumber\": \"B-1234\",\n" +
                     "  \"sortieNumber\": \"CA1234-20260723\",\n" +
                     "  \"flightDate\": \"2026-07-23\",\n" +
-                    "  \"takeoffTime\": \"10:30:00\",\n" +
-                    "  \"landingTime\": \"14:20:00\",\n" +
-                    "  \"origin\": \"北京首都\",\n" +
-                    "  \"destination\": \"上海浦东\",\n" +
-                    "  \"pilot\": \"张三\",\n" +
-                    "  \"remark\": \"\"\n" +
+                    "  \"startTime\": \"10:30:00\",\n" +
+                    "  \"endTime\": \"14:20:00\",\n" +
                     "}\n" +
                     "```")
     @Tag(name = "04-架次管理")

@@ -115,13 +115,8 @@ public class SchemaInitializer {
                 + "aircraft_number VARCHAR(20) NOT NULL, "
                 + "sortie_number VARCHAR(100), "
                 + "flight_date VARCHAR(20), "
-                + "takeoff_time VARCHAR(20), "
-                + "landing_time VARCHAR(20), "
-                + "origin VARCHAR(100), "
-                + "destination VARCHAR(100), "
-                + "pilot VARCHAR(100), "
-                + "remark VARCHAR(500), "
-                + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
+                + "start_time VARCHAR(20), "
+                + "end_time VARCHAR(20), "
                 + "PRIMARY KEY (sortie_id)"
                 + ")";
         jdbcTemplate.execute(sql);
