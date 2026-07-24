@@ -27,14 +27,24 @@ public class UnifiedConfigItemService {
 
     private final RestTemplate supportRestTemplate;
     private final AircraftConfigService aircraftConfigService;
+    private final PlatformConfigService platformConfigService;
     private final String configPath;
 
     public UnifiedConfigItemService(RestTemplate supportRestTemplate,
                                     AircraftConfigService aircraftConfigService,
+                                    PlatformConfigService platformConfigService,
                                     @Value("${support-system.paths.getDzgxxx}") String configPath) {
         this.supportRestTemplate = supportRestTemplate;
         this.aircraftConfigService = aircraftConfigService;
+        this.platformConfigService = platformConfigService;
         this.configPath = configPath;
+    }
+
+    /** 来源名称 → 平台名称映射 */
+    private static String platformName(String source) {
+        if ("633".equals(source)) return "633服务";
+        if ("航新".equals(source)) return "航新服务";
+        return source;
     }
 
     public ApiResult<List<Object>> queryConfigItems(UnifiedConfigRequest request) {
@@ -85,14 +95,20 @@ public class UnifiedConfigItemService {
         });
     }
 
+    /** 外部构型查询（使用各自平台的 base URL + 公共路径） */
     private CompletableFuture<SourceRawResult> queryExternalSafe(String sourceName, UnifiedConfigRequest request) {
         return CompletableFuture.supplyAsync(() -> {
             try {
-                String url = UriComponentsBuilder.fromPath(configPath)
+                String platName = platformName(sourceName);
+                String baseUrl = platformConfigService.getFullBaseUrl(platName);
+                if (baseUrl == null || baseUrl.isEmpty()) {
+                    return new SourceRawResult(null, platName + "未配置");
+                }
+                String fullUrl = UriComponentsBuilder.fromHttpUrl(baseUrl + configPath)
                         .queryParam("page", request.getPage() != null ? request.getPage() : 1)
                         .queryParam("rows", request.getRows() != null ? request.getRows() : 10)
                         .build().toUriString();
-                Object data = supportRestTemplate.getForObject(url, Object.class);
+                Object data = supportRestTemplate.getForObject(fullUrl, Object.class);
                 return new SourceRawResult(data, data != null ? SUCCESS : sourceName + "未返回数据");
             } catch (Exception e) {
                 log.warn("{}构型查询失败: {}", sourceName, e.getMessage());

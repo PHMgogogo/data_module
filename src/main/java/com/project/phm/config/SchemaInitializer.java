@@ -32,6 +32,7 @@ public class SchemaInitializer {
         createConfigDataMappingTable();
         createSortieTable();
         createHealthRecordTable();
+        createExternalPlatformTable();
         log.info("=== 飞机构型相关表结构初始化完成 ===");
     }
 
@@ -142,5 +143,27 @@ public class SchemaInitializer {
                 + ")";
         jdbcTemplate.execute(sql);
         log.info("表 health_record 已就绪");
+    }
+
+    /**
+     * 外来平台配置表
+     */
+    private void createExternalPlatformTable() {
+        String sql = "CREATE TABLE IF NOT EXISTS external_platform ("
+                + "id INT IDENTITY(1,1) NOT NULL, "
+                + "platform_name VARCHAR(100) NOT NULL, "
+                + "platform_ip VARCHAR(100) NOT NULL DEFAULT '', "
+                + "port INT, "
+                + "PRIMARY KEY (id)"
+                + ")";
+        jdbcTemplate.execute(sql);
+        // 兼容旧表：添加 port 列（忽略已存在），删除 base_url 列（忽略不存在）
+        try {
+            jdbcTemplate.execute("ALTER TABLE external_platform ADD port INT");
+        } catch (Exception ignored) { }
+        try {
+            jdbcTemplate.execute("ALTER TABLE external_platform DROP COLUMN base_url");
+        } catch (Exception ignored) { }
+        log.info("表 external_platform 已就绪");
     }
 }

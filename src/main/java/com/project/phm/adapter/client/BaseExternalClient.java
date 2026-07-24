@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.CollectionType;
 import com.project.phm.adapter.dto.ExternalModelData;
 import com.project.phm.adapter.dto.ExternalSortieData;
+import com.project.phm.service.PlatformConfigService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestTemplate;
@@ -17,7 +18,9 @@ import java.util.Map;
 
 /**
  * 外来平台 API 调用的基础封装。
- * 子类只需提供 RestTemplate 和 base URL，公共的 HTTP 调用和 JSON 解析由本类处理。
+ *
+ * <p>base URL 运行时从 DB 动态解析，无配置时抛 IllegalStateException
+ * 由上层编排服务捕获并记入 SourceInfo.message。</p>
  */
 public abstract class BaseExternalClient {
 
@@ -27,39 +30,41 @@ public abstract class BaseExternalClient {
 
     protected final RestTemplate restTemplate;
     protected final ObjectMapper objectMapper;
+    protected final PlatformConfigService configService;
 
-    protected BaseExternalClient(RestTemplate restTemplate, ObjectMapper objectMapper) {
+    protected BaseExternalClient(RestTemplate restTemplate, ObjectMapper objectMapper,
+                                 PlatformConfigService configService) {
         this.restTemplate = restTemplate;
         this.objectMapper = objectMapper;
+        this.configService = configService;
     }
 
-    /**
-     * 调用外来平台的架次查询接口。
-     * <p>HTTP/IO 异常直接向上抛出，由编排服务层（UnifiedSortieService）统一捕获并记录原因。</p>
-     *
-     * @param params 请求参数 map
-     * @return 解析后的架次数据列表
-     * @throws RuntimeException RestTemplate 调用异常（连接超时、DNS 解析失败等）
-     */
+    /** 构建完整请求 URL，无配置时抛异常 */
+    private String buildUrl(String path) {
+        String base = configService.getFullBaseUrl(getPlatformName());
+        if (base == null || base.isEmpty()) {
+            throw new IllegalStateException("[" + getPlatformName() + "] 未配置 base URL，请先录入平台配置");
+        }
+        return base + path;
+    }
+
+    // ==================== 架次查询 ====================
+
     public List<ExternalSortieData> querySorties(Map<String, Object> params) {
-        String json = restTemplate.postForObject(SORTIE_PATH, params, String.class);
+        String json = restTemplate.postForObject(buildUrl(SORTIE_PATH), params, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] 外来平台返回空响应", getPlatformName());
             return Collections.emptyList();
         }
-        return parseResponse(json);
+        return parseSortieResponse(json);
     }
 
-    /**
-     * 调用外来平台的机型查询接口。
-     *
-     * @param params 请求参数 map
-     * @return 解析后的机型数据列表
-     */
+    // ==================== 机型查询 ====================
+
     public List<ExternalModelData> queryModels(Map<String, Object> params) {
-        UriComponentsBuilder builder = UriComponentsBuilder.fromPath(MODEL_PATH);
-        params.forEach(builder::queryParam);
-        String url = builder.build().toUriString();
+        String url = UriComponentsBuilder.fromHttpUrl(buildUrl(MODEL_PATH))
+                .queryParam("airplaneType", params.getOrDefault("airplaneType", ""))
+                .build().toUriString();
 
         String json = restTemplate.getForObject(url, String.class);
         if (json == null || json.isEmpty()) {
@@ -69,7 +74,78 @@ public abstract class BaseExternalClient {
         return parseModelResponse(json);
     }
 
-    /** 解析机型 JSON 响应 */
+    // ==================== 通用 POST（原始 data） ====================
+
+    public Object postForRawData(String path, Object body) {
+        String fullUrl = buildUrl(path);
+        String json = restTemplate.postForObject(fullUrl, body, String.class);
+        if (json == null || json.isEmpty()) {
+            log.warn("[{}] POST 接口返回空响应: {}", getPlatformName(), path);
+            return null;
+        }
+        return parseRawData(json);
+    }
+
+    // ==================== 通用 GET（原始 data） ====================
+
+    public Object queryForRawData(String path, Map<String, Object> params) {
+        String url = UriComponentsBuilder.fromHttpUrl(buildUrl(path))
+                .queryParam("airplaneType", params.getOrDefault("airplaneType", ""))
+                .queryParam("airplaneNum", params.getOrDefault("airplaneNum", ""))
+                .build().toUriString();
+
+        String json = restTemplate.getForObject(url, String.class);
+        if (json == null || json.isEmpty()) {
+            log.warn("[{}] 接口返回空响应: {}", getPlatformName(), path);
+            return null;
+        }
+        return parseRawData(json);
+    }
+
+    // ==================== JSON 解析 ====================
+
+    private Object parseRawData(String json) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode dataNode = root.path("data");
+            if (dataNode.isMissingNode() || dataNode.isNull()) {
+                return null;
+            }
+            return objectMapper.treeToValue(dataNode, Object.class);
+        } catch (JsonProcessingException e) {
+            log.error("[{}] JSON解析失败: {}", getPlatformName(), e.getMessage(), e);
+            return null;
+        }
+    }
+
+    private List<ExternalSortieData> parseSortieResponse(String json) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            int code = root.path("code").asInt(0);
+            if (code != 200) {
+                log.warn("[{}] 外来平台返回异常状态码: code={}, message={}",
+                        getPlatformName(), code, root.path("message").asText());
+                return Collections.emptyList();
+            }
+            JsonNode dataNode = root.path("data");
+            if (dataNode.isMissingNode() || dataNode.isNull()) {
+                return Collections.emptyList();
+            }
+            CollectionType listType = objectMapper.getTypeFactory()
+                    .constructCollectionType(List.class, ExternalSortieData.class);
+            if (dataNode.isArray()) {
+                return objectMapper.treeToValue(dataNode, listType);
+            } else if (dataNode.isObject()) {
+                ExternalSortieData single = objectMapper.treeToValue(dataNode, ExternalSortieData.class);
+                return Collections.singletonList(single);
+            }
+            return Collections.emptyList();
+        } catch (JsonProcessingException e) {
+            log.error("[{}] JSON 解析失败: {}", getPlatformName(), e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
     private List<ExternalModelData> parseModelResponse(String json) {
         try {
             JsonNode root = objectMapper.readTree(json);
@@ -92,73 +168,5 @@ public abstract class BaseExternalClient {
         }
     }
 
-    /**
-     * 通用 GET 查询，返回原始 data 段（用于结构不确定的接口）。
-     *
-     * @param path   API 路径
-     * @param params 查询参数
-     * @return 原始 data 的 parsed 对象（Map / List / null）
-     */
-    public Object queryForRawData(String path, Map<String, Object> params) {
-        UriComponentsBuilder builder = UriComponentsBuilder.fromPath(path);
-        params.forEach(builder::queryParam);
-        String url = builder.build().toUriString();
-
-        String json = restTemplate.getForObject(url, String.class);
-        if (json == null || json.isEmpty()) {
-            log.warn("[{}] 接口返回空响应: {}", getPlatformName(), path);
-            return null;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(json);
-            JsonNode dataNode = root.path("data");
-            if (dataNode.isMissingNode() || dataNode.isNull()) {
-                return null;
-            }
-            return objectMapper.treeToValue(dataNode, Object.class);
-        } catch (JsonProcessingException e) {
-            log.error("[{}] JSON解析失败: {}", getPlatformName(), e.getMessage(), e);
-            return null;
-        }
-    }
-
-    /**
-     * 解析外来平台返回的 JSON。
-     * 期望格式: { "code": 200, "message": "success", "data": [...] }
-     * data 可以是对象数组，也可以是单个对象（会被包装成单元素列表）。
-     */
-    private List<ExternalSortieData> parseResponse(String json) {
-        try {
-            JsonNode root = objectMapper.readTree(json);
-            int code = root.path("code").asInt(0);
-            if (code != 200) {
-                log.warn("[{}] 外来平台返回异常状态码: code={}, message={}",
-                        getPlatformName(), code, root.path("message").asText());
-                return Collections.emptyList();
-            }
-
-            JsonNode dataNode = root.path("data");
-            if (dataNode.isMissingNode() || dataNode.isNull()) {
-                return Collections.emptyList();
-            }
-
-            CollectionType listType = objectMapper.getTypeFactory()
-                    .constructCollectionType(List.class, ExternalSortieData.class);
-
-            if (dataNode.isArray()) {
-                return objectMapper.treeToValue(dataNode, listType);
-            } else if (dataNode.isObject()) {
-                // data 是单个对象，包装成列表
-                ExternalSortieData single = objectMapper.treeToValue(dataNode, ExternalSortieData.class);
-                return Collections.singletonList(single);
-            }
-            return Collections.emptyList();
-        } catch (JsonProcessingException e) {
-            log.error("[{}] JSON 解析失败: {}", getPlatformName(), e.getMessage(), e);
-            return Collections.emptyList();
-        }
-    }
-
-    /** 子类返回平台名称，用于日志标识 */
     protected abstract String getPlatformName();
 }

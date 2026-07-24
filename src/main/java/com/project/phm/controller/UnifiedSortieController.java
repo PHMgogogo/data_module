@@ -7,10 +7,12 @@ import com.project.phm.adapter.dto.UnifiedModelRequest;
 import com.project.phm.adapter.dto.UnifiedModelResponse;
 import com.project.phm.adapter.dto.UnifiedSortieRequest;
 import com.project.phm.adapter.dto.UnifiedSortieResponse;
+import com.project.phm.adapter.dto.UnifiedTimeSeriesRequest;
 import com.project.phm.service.UnifiedAircraftService;
 import com.project.phm.service.UnifiedConfigItemService;
 import com.project.phm.service.UnifiedModelService;
 import com.project.phm.service.UnifiedSortieService;
+import com.project.phm.service.UnifiedTimeSeriesService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
@@ -41,15 +43,18 @@ public class UnifiedSortieController {
     private final UnifiedModelService unifiedModelService;
     private final UnifiedAircraftService unifiedAircraftService;
     private final UnifiedConfigItemService unifiedConfigItemService;
+    private final UnifiedTimeSeriesService unifiedTimeSeriesService;
 
     public UnifiedSortieController(UnifiedSortieService unifiedSortieService,
                                    UnifiedModelService unifiedModelService,
                                    UnifiedAircraftService unifiedAircraftService,
-                                   UnifiedConfigItemService unifiedConfigItemService) {
+                                   UnifiedConfigItemService unifiedConfigItemService,
+                                   UnifiedTimeSeriesService unifiedTimeSeriesService) {
         this.unifiedSortieService = unifiedSortieService;
         this.unifiedModelService = unifiedModelService;
         this.unifiedAircraftService = unifiedAircraftService;
         this.unifiedConfigItemService = unifiedConfigItemService;
+        this.unifiedTimeSeriesService = unifiedTimeSeriesService;
     }
 
     @Operation(summary = "聚合查询架次元数据",
@@ -104,6 +109,17 @@ public class UnifiedSortieController {
         request.setPage(page);
         request.setRows(rows);
         ApiResult<List<Object>> result = unifiedConfigItemService.queryConfigItems(request);
+        return ResponseEntity.ok(result);
+    }
+
+    @Operation(summary = "聚合查询时序数据",
+            description = "查询本地、633 和航新三个数据源的时序数据。\n\n" +
+                    "**注意**：本地 CSV 文件以 base64 编码放入 data 列表。\n" +
+                    "data 为异构列表：[{本地文件(base64)}, {633返回}, {航新返回}]。")
+    @PostMapping("/timeseries/query")
+    public ResponseEntity<ApiResult<List<Object>>> queryTimeSeries(
+            @RequestBody UnifiedTimeSeriesRequest request) {
+        ApiResult<List<Object>> result = unifiedTimeSeriesService.queryTimeSeries(request);
         return ResponseEntity.ok(result);
     }
 }
