@@ -2,7 +2,9 @@ package com.project.phm.controller;
 
 import com.project.phm.adapter.dto.ApiResult;
 import com.project.phm.adapter.dto.UnifiedAircraftRequest;
+import com.project.phm.adapter.dto.UnifiedAircraftResponse;
 import com.project.phm.adapter.dto.UnifiedConfigRequest;
+import com.project.phm.adapter.dto.UnifiedConfigResponse;
 import com.project.phm.adapter.dto.UnifiedModelRequest;
 import com.project.phm.adapter.dto.UnifiedModelResponse;
 import com.project.phm.adapter.dto.UnifiedSortieRequest;
@@ -71,44 +73,41 @@ public class UnifiedSortieController {
 
     @Operation(summary = "聚合查询机型",
             description = "并发查询航新、633 和本地三个数据源的机型数据，合并后返回统一的响应列表。\n\n" +
-                    "**keyword**：本地按 modelCode 模糊匹配；航新/633 按 airplaneType 精确匹配。")
+                    "**airplaneType**：本地按 modelCode 模糊匹配；航新/633 按 airplaneType 精确匹配。")
     @GetMapping("/model/query")
     public ResponseEntity<ApiResult<List<UnifiedModelResponse>>> queryModels(
-            @RequestParam(value = "keyword", required = false) String keyword) {
+            @RequestParam(value = "airplaneType", required = false) String airplaneType) {
         UnifiedModelRequest request = new UnifiedModelRequest();
-        request.setKeyword(keyword);
+        request.setAirplaneType(airplaneType);
         ApiResult<List<UnifiedModelResponse>> result = unifiedModelService.queryModelsSafe(request);
         return ResponseEntity.ok(result);
     }
 
     @Operation(summary = "聚合查询单机",
-            description = "查询航新、633 和本地三个数据源的单机信息。\n\n" +
-                    "**注意**：data 为异构列表 [{本机实体}, {633返回}, {航新返回}]，各源数据独立不合并。")
+            description = "查询航新、633 和本地三个数据源的单机信息，按 aircraftNumber 去重合并后返回统一的响应列表。")
     @GetMapping("/aircraft/query")
-    public ResponseEntity<ApiResult<List<Object>>> queryAircraft(
+    public ResponseEntity<ApiResult<List<UnifiedAircraftResponse>>> queryAircraft(
             @RequestParam(value = "airplaneType", required = false) String airplaneType,
             @RequestParam(value = "airplaneNum", required = false) String airplaneNum) {
         UnifiedAircraftRequest request = new UnifiedAircraftRequest();
         request.setAirplaneType(airplaneType);
         request.setAirplaneNum(airplaneNum);
-        ApiResult<List<Object>> result = unifiedAircraftService.queryAircraft(request);
+        ApiResult<List<UnifiedAircraftResponse>> result = unifiedAircraftService.queryAircraft(request);
         return ResponseEntity.ok(result);
     }
 
     @Operation(summary = "聚合查询单机构型",
-            description = "查询航新、633 和本地三个数据源的单机构型信息。\n\n" +
-                    "**注意**：data 为异构列表 [{本地配置列表}, {633返回}, {航新返回}]。\n" +
-                    "本地仅使用 airplaneType（对应 modelCode）查询构型列表，忽略 page/rows。")
+            description = "查询航新、633 和本地三个数据源的单机构型信息，按 nodeId 去重合并后返回统一的响应列表。")
     @GetMapping("/config/query")
-    public ResponseEntity<ApiResult<List<Object>>> queryConfigItems(
-            @RequestParam(value = "airplaneType", required = false) String airplaneType,
-            @RequestParam(value = "page", required = false) Integer page,
-            @RequestParam(value = "rows", required = false) Integer rows) {
+    public ResponseEntity<ApiResult<List<UnifiedConfigResponse>>> queryConfigItems(
+            @RequestParam(value = "modelCode", required = false) String modelCode,
+            @RequestParam(value = "pageNum", required = false) Integer pageNum,
+            @RequestParam(value = "pageSize", required = false) Integer pageSize) {
         UnifiedConfigRequest request = new UnifiedConfigRequest();
-        request.setAirplaneType(airplaneType);
-        request.setPage(page);
-        request.setRows(rows);
-        ApiResult<List<Object>> result = unifiedConfigItemService.queryConfigItems(request);
+        request.setModelCode(modelCode);
+        request.setPageNum(pageNum);
+        request.setPageSize(pageSize);
+        ApiResult<List<UnifiedConfigResponse>> result = unifiedConfigItemService.queryConfigItems(request);
         return ResponseEntity.ok(result);
     }
 

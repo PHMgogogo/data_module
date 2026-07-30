@@ -2,6 +2,8 @@ package com.project.phm.service;
 
 import com.opencsv.CSVReader;
 import com.opencsv.CSVWriter;
+import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse;
+import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse.ParameterEntry;
 import com.project.phm.entity.ConfigItem;
 import com.project.phm.entity.Sortie;
 import com.project.phm.utils.*;
@@ -17,6 +19,9 @@ import java.io.OutputStreamWriter;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -626,6 +631,166 @@ public class CsvService {
         }
 
         writeCsvToStream(csvData, outputStream);
+    }
+
+    /**
+     * 查询时序数据并返回统一格式响应（timestamps + parameters）。
+     *
+     * <p>实现「统一接口调用.md」定义的时序数据查询接口。
+     * 自动从元数据或列名推断时间戳列，将其作为时间轴；其余请求列作为参数值序列。</p>
+     *
+     * <p><b>无时间戳列的表</b>：如果无法推断时间戳列，则 timestamps 返回空列表，
+     * parameters.name 使用真实的列名，values 按行序排列。</p>
+     *
+     * @param tableName 表名（含 csv_ 前缀）
+     * @param paralist  要查询的参数名列表
+     * @return 统一时序响应
+     */
+    public UnifiedTimeSeriesResponse queryTimeSeries(String tableName, List<String> paralist) {
+        validateTableName(tableName);
+
+        List<String> allColumns = dbUtils.getColumnNames(tableName);
+
+        // 1. 校验请求的列名在表中实际存在
+        if (paralist != null) {
+            List<String> missingCols = paralist.stream()
+                    .filter(p -> p != null && !p.isEmpty()
+                            && allColumns.stream().noneMatch(c -> c.equalsIgnoreCase(p)))
+                    .collect(Collectors.toList());
+            if (!missingCols.isEmpty()) {
+                String available = allColumns.stream()
+                        .filter(c -> !"id".equalsIgnoreCase(c))
+                        .collect(Collectors.joining(", "));
+                throw new IllegalArgumentException("列不存在于表中: " + String.join(", ", missingCols)
+                        + "。表中实际列: [" + available + "]");
+            }
+        }
+
+        // 2. 确定时间戳列（可能为 null）
+        String timestampColumn = findTimestampColumn(tableName, allColumns);
+
+        // 3. 构建查询列集合：时间戳列（如有）+ 请求的参数列（去重）
+        Set<String> queryCols = new LinkedHashSet<>();
+        if (timestampColumn != null) {
+            queryCols.add(timestampColumn);
+        }
+        if (paralist != null) {
+            for (String param : paralist) {
+                if (param == null || param.isEmpty()) continue;
+                if (timestampColumn != null && param.equalsIgnoreCase(timestampColumn)) continue;
+                // 已通过上方校验确认列存在，此处只取用于保留原始大小写
+                String matched = findColumnIgnoreCase(allColumns, param);
+                queryCols.add(matched != null ? matched : param);
+            }
+        }
+        if (queryCols.isEmpty()) {
+            throw new IllegalArgumentException("没有可查询的列");
+        }
+
+        // 4. 执行查询
+        String colList = queryCols.stream()
+                .map(String::toUpperCase)
+                .collect(Collectors.joining(", "));
+        String sql = "SELECT " + colList + " FROM " + tableName + " ORDER BY ID";
+        List<Map<String, Object>> rows = dbUtils.queryForList(sql);
+
+        // 4. 提取时间轴（如有时间戳列）
+        List<Long> timestamps = new ArrayList<>();
+        if (timestampColumn != null) {
+            for (Map<String, Object> row : rows) {
+                Object ts = getValueIgnoreCase(row, timestampColumn);
+                timestamps.add(convertToTimestamp(ts));
+            }
+        }
+
+        // 5. 提取各参数值序列
+        List<ParameterEntry> parameters = new ArrayList<>();
+        for (String col : queryCols) {
+            if (timestampColumn != null && col.equalsIgnoreCase(timestampColumn)) continue;
+            List<Object> values = new ArrayList<>();
+            for (Map<String, Object> row : rows) {
+                values.add(getValueIgnoreCase(row, col));
+            }
+            parameters.add(ParameterEntry.of(col, values));
+        }
+
+        UnifiedTimeSeriesResponse resp = new UnifiedTimeSeriesResponse();
+        resp.setTimestamps(timestamps);
+        resp.setParameters(parameters);
+        return resp;
+    }
+
+    /**
+     * 从元数据或列名推断时间戳列。
+     * 优先从表元数据 {@code timestamp_column} 读取，否则按常见命名匹配。
+     */
+    private String findTimestampColumn(String tableName, List<String> allColumns) {
+        // 优先从元数据读取
+        String metaCol = dbUtils.getTableMetadata(tableName, "timestamp_column");
+        if (metaCol != null && !metaCol.isEmpty()) {
+            String matched = findColumnIgnoreCase(allColumns, metaCol);
+            if (matched != null) return matched;
+        }
+
+        // 按常见命名匹配
+        for (String col : allColumns) {
+            if (IoTDbUtils.isTimestampColumn(col) || "时间戳".equals(col)
+                    || "timestamp".equalsIgnoreCase(col)) {
+                return col;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 在列名列表中忽略大小写查找目标列。
+     *
+     * @return 匹配到的实际列名，未找到返回 null
+     */
+    private String findColumnIgnoreCase(List<String> columns, String target) {
+        for (String col : columns) {
+            if (col.equalsIgnoreCase(target)) return col;
+        }
+        return null;
+    }
+
+    /**
+     * 从行数据中忽略大小写获取列值（达梦默认返回大写列名）。
+     */
+    private Object getValueIgnoreCase(Map<String, Object> row, String column) {
+        Object val = row.get(column.toUpperCase());
+        if (val == null) val = row.get(column.toLowerCase());
+        return val;
+    }
+
+    /**
+     * 将数据库中的时间戳值转为 Long 毫秒时间戳。
+     *
+     * <p>支持：Long/Integer（直接返回）、数字字符串、日期时间字符串。</p>
+     */
+    private static Long convertToTimestamp(Object value) {
+        if (value == null) return null;
+        if (value instanceof Number) return ((Number) value).longValue();
+        String str = value.toString().trim();
+        if (str.isEmpty()) return null;
+        // 纯数字字符串 → 直接解析
+        if (str.matches("-?\\d+(\\.\\d+)?")) {
+            double num = Double.parseDouble(str);
+            return (long) num;
+        }
+        // 日期时间字符串 → 尝试常见格式
+        for (String fmt : new String[]{"yyyy-MM-dd HH:mm:ss.SSS", "yyyy-MM-dd HH:mm:ss",
+                "yyyy/MM/dd HH:mm:ss", "yyyy-MM-dd'T'HH:mm:ss"}) {
+            try {
+                LocalDateTime dt = LocalDateTime.parse(str, DateTimeFormatter.ofPattern(fmt));
+                return dt.atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+            } catch (DateTimeParseException ignored) {
+                // 继续尝试下一种格式
+            }
+        }
+        // 无法解析时，返回 null
+        log.warn("无法解析的时间戳值: {}", str);
+        return null;
     }
 
     /**

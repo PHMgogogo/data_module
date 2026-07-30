@@ -86,6 +86,17 @@ public abstract class BaseExternalClient {
         return parseRawData(json);
     }
 
+    /** POST 请求，返回原始 JSON 字符串（由调用方自行解析） */
+    public String postForRawJson(String path, Object body) {
+        String fullUrl = buildUrl(path);
+        String json = restTemplate.postForObject(fullUrl, body, String.class);
+        if (json == null || json.isEmpty()) {
+            log.warn("[{}] POST 接口返回空响应: {}", getPlatformName(), path);
+            return null;
+        }
+        return json;
+    }
+
     // ==================== 通用 GET（原始 data） ====================
 
     public Object queryForRawData(String path, Map<String, Object> params) {

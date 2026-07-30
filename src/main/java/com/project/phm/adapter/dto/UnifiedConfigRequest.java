@@ -11,27 +11,32 @@ import java.util.Map;
 @Schema(description = "统一单机构型查询请求")
 public class UnifiedConfigRequest {
 
+    @Schema(description = "飞机ID（633 查询参数）", example = "10")
+    private String aircraftId;
+
     @Schema(description = "机型（本地按 modelCode 查询）", example = "B737-800")
-    private String airplaneType;
+    private String modelCode;
 
     @Schema(description = "页码（航新/633）", example = "1")
-    private Integer page;
+    private Integer pageNum;
 
     @Schema(description = "每页数量（航新/633），默认10", example = "10")
-    private Integer rows;
+    private Integer pageSize;
 
-    public String getAirplaneType() { return airplaneType; }
-    public void setAirplaneType(String airplaneType) { this.airplaneType = airplaneType; }
-    public Integer getPage() { return page; }
-    public void setPage(Integer page) { this.page = page; }
-    public Integer getRows() { return rows; }
-    public void setRows(Integer rows) { this.rows = rows; }
+    public String getAircraftId() { return aircraftId; }
+    public void setAircraftId(String aircraftId) { this.aircraftId = aircraftId; }
+    public String getModelCode() { return modelCode; }
+    public void setModelCode(String modelCode) { this.modelCode = modelCode; }
+    public Integer getPageNum() { return pageNum; }
+    public void setPageNum(Integer pageNum) { this.pageNum = pageNum; }
+    public Integer getPageSize() { return pageSize; }
+    public void setPageSize(Integer pageSize) { this.pageSize = pageSize; }
 
     public Map<String, Object> toExternalParams() {
         Map<String, Object> params = new HashMap<>();
-        if (page != null)  params.put("page", page);
-        if (rows != null)  params.put("rows", rows);
-        else               params.put("rows", 10);
+        if (pageNum != null)  params.put("page", pageNum);
+        if (pageSize != null) params.put("rows", pageSize);
+        else                  params.put("rows", 10);
         return params;
     }
 }

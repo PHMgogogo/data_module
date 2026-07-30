@@ -1,5 +1,8 @@
 package com.project.phm.controller;
 
+import com.project.phm.adapter.dto.ApiResult;
+import com.project.phm.adapter.dto.UnifiedTimeSeriesRequest;
+import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse;
 import com.project.phm.entity.ConfigDataMapping;
 import com.project.phm.entity.ValidationResult;
 import com.project.phm.service.AircraftConfigService;
@@ -529,6 +532,76 @@ public class CsvController {
             return ResponseEntity.badRequest().body(null);
         } catch (Exception e) {
             return ResponseEntity.status(500).body(null);
+        }
+    }
+
+    // ==================== 时序数据统一查询接口 ====================
+
+    /**
+     * 本地时序数据查询（统一接口）
+     *
+     * <p>实现「统一接口调用.md」定义的时序数据查询接口。
+     * 从达梦 csv_xxx 表查询指定参数的时间序列，返回统一格式的响应。</p>
+     *
+     * <p><b>请求示例：</b></p>
+     * <pre>{@code
+     * POST /csv/query-timeseries
+     * {
+     *   "tableName": "csv_engine_vibration",
+     *   "paralist": ["fan_vibration", "egt_actual"]
+     * }
+     * }</pre>
+     *
+     * <p><b>响应示例：</b></p>
+     * <pre>{@code
+     * {
+     *   "code": 200,
+     *   "message": "success",
+     *   "data": {
+     *     "timestamps": [1704067200000, 1704067201000, ...],
+     *     "parameters": [
+     *       {"name": "fan_vibration", "values": [2.5, 2.6, ...]},
+     *       {"name": "egt_actual", "values": [450.0, 452.0, ...]}
+     *     ]
+     *   }
+     * }
+     * }</pre>
+     */
+    @Operation(summary = "本地时序数据查询（统一接口）",
+            description = "从达梦 csv_xxx 表查询指定参数的时序数据，返回 timestamps+parameters 的统一格式。\n\n" +
+                    "**自动推断时间戳列**：优先读取表元数据 timestamp_column，否则按常见列名匹配。\n" +
+                    "**参数**：paralist 为参数名列表（不含时间戳列），tableName 为表名（含 csv_ 前缀）。")
+    @PostMapping("/query-timeseries")
+    public ResponseEntity<ApiResult<UnifiedTimeSeriesResponse>> queryTimeSeries(
+            @RequestBody UnifiedTimeSeriesRequest request) {
+        try {
+            // 校验
+            if (request.getTableName() == null || request.getTableName().isEmpty()) {
+                return ResponseEntity.badRequest()
+                        .body(ApiResult.error(400, "tableName 不能为空"));
+            }
+
+            List<String> paralist = request.getParalist();
+            if (paralist == null || paralist.isEmpty()) {
+                // 向后兼容 columns（逗号分隔字符串）
+                String cols = request.getColumns();
+                if (cols == null || cols.isEmpty()) {
+                    return ResponseEntity.badRequest()
+                            .body(ApiResult.error(400, "paralist 不能为空"));
+                }
+                paralist = Arrays.asList(cols.split("\\s*,\\s*"));
+            }
+
+            UnifiedTimeSeriesResponse resp = csvService.queryTimeSeries(
+                    request.getTableName(), paralist);
+            return ResponseEntity.ok(ApiResult.success(resp));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResult.error(400, e.getMessage()));
+        } catch (Exception e) {
+            log.error("本地时序数据查询异常: {}", e.getMessage(), e);
+            return ResponseEntity.internalServerError()
+                    .body(ApiResult.error(500, "查询失败: " + e.getMessage()));
         }
     }
 

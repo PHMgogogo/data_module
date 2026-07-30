@@ -14,17 +14,17 @@ import java.util.Map;
 @Schema(description = "统一机型查询请求")
 public class UnifiedModelRequest {
 
-    @Schema(description = "关键词（本地按 modelCode 模糊匹配；航新/633 按 airplaneType 精确匹配）", example = "A320")
-    private String keyword;
+    @Schema(description = "机型（本地按 modelCode 模糊匹配；航新/633 按 airplaneType 精确匹配）", example = "A320")
+    private String airplaneType;
 
-    public String getKeyword() { return keyword; }
-    public void setKeyword(String keyword) { this.keyword = keyword; }
+    public String getAirplaneType() { return airplaneType; }
+    public void setAirplaneType(String airplaneType) { this.airplaneType = airplaneType; }
 
     /** 转为航新/633 的请求参数（两者参数相同） */
     public Map<String, Object> toExternalParams() {
         Map<String, Object> params = new HashMap<>();
-        if (keyword != null && !keyword.isEmpty()) {
-            params.put("airplaneType", keyword);
+        if (airplaneType != null && !airplaneType.isEmpty()) {
+            params.put("airplaneType", airplaneType);
         }
         return params;
     }
@@ -32,8 +32,8 @@ public class UnifiedModelRequest {
     /** 转为本地 AircraftModel 表的查询条件 */
     public LambdaQueryWrapper<AircraftModel> toLocalQuery() {
         LambdaQueryWrapper<AircraftModel> wrapper = Wrappers.lambdaQuery();
-        if (keyword != null && !keyword.isEmpty()) {
-            wrapper.like(AircraftModel::getModelCode, keyword);
+        if (airplaneType != null && !airplaneType.isEmpty()) {
+            wrapper.like(AircraftModel::getModelCode, airplaneType);
         }
         wrapper.orderByAsc(AircraftModel::getModelCode);
         return wrapper;

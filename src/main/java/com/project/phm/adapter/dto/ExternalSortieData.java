@@ -1,5 +1,6 @@
 package com.project.phm.adapter.dto;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
@@ -30,7 +31,11 @@ public class ExternalSortieData {
     private String endTime;
 
     @Schema(description = "属性字段列表（航新返回）")
+    @JsonProperty("paralist")
     private List<String> paramList;
+
+    @Schema(description = "飞行日期（633 从 startTime 提取）")
+    private String flightDate;
 
     public String getId() { return id; }
     public void setId(String id) { this.id = id; }
@@ -46,4 +51,6 @@ public class ExternalSortieData {
     public void setEndTime(String endTime) { this.endTime = endTime; }
     public List<String> getParamList() { return paramList; }
     public void setParamList(List<String> paramList) { this.paramList = paramList; }
+    public String getFlightDate() { return flightDate; }
+    public void setFlightDate(String flightDate) { this.flightDate = flightDate; }
 }

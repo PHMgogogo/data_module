@@ -5,11 +5,13 @@ import com.project.phm.adapter.dto.UnifiedModelResponse;
 import com.project.phm.entity.AircraftModel;
 import org.springframework.stereotype.Component;
 
-import java.util.*;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * 三方（航新、633、本地）机型数据合并器。
- * 以 airplaneType 为键去重合并。
+ * 三方（航新、633、本地）机型数据拼接器。
+ *
+ * <p>不做跨源去重合并，直接将各源数据全部放入结果列表，每条记录标记来源。</p>
  */
 @Component
 public class ModelDataMerger {
@@ -19,35 +21,26 @@ public class ModelDataMerger {
             List<ExternalModelData> sanSanList,
             List<AircraftModel> localList) {
 
-        Map<String, UnifiedModelResponse> mergedMap = new LinkedHashMap<>();
+        List<UnifiedModelResponse> result = new ArrayList<>();
 
         if (hangxinList != null) {
             for (ExternalModelData ext : hangxinList) {
-                String key = ext.getAirplaneType();
-                if (key != null) {
-                    mergedMap.putIfAbsent(key, UnifiedModelResponse.fromExternal(ext));
-                }
+                result.add(UnifiedModelResponse.fromExternal(ext, "hangxin"));
             }
         }
 
         if (sanSanList != null) {
             for (ExternalModelData ext : sanSanList) {
-                String key = ext.getAirplaneType();
-                if (key != null) {
-                    mergedMap.putIfAbsent(key, UnifiedModelResponse.fromExternal(ext));
-                }
+                result.add(UnifiedModelResponse.fromExternal(ext, "sansan"));
             }
         }
 
         if (localList != null) {
             for (AircraftModel local : localList) {
-                String key = local.getModelCode();
-                if (key != null) {
-                    mergedMap.putIfAbsent(key, UnifiedModelResponse.fromLocal(local));
-                }
+                result.add(UnifiedModelResponse.fromLocal(local));
             }
         }
 
-        return new ArrayList<>(mergedMap.values());
+        return result;
     }
 }

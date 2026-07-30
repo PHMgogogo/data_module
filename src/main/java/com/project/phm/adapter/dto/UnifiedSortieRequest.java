@@ -34,8 +34,11 @@ public class UnifiedSortieRequest {
     @Schema(description = "源文件类型，精确匹配（航新 only）", example = "DAT")
     private String fileType;
 
-    @Schema(description = "架次号（633/本地），支持数字（按 sortieId）或字符串（按 sortieNumber）", example = "CA123")
-    private Object flightNum;
+    @Schema(description = "架次ID（本地按 sortieId 精确匹配）", example = "1")
+    private Long sortieId;
+
+    @Schema(description = "架次号（633 查询参数）", example = "20260706-1")
+    private String flightNum;
 
     @Schema(description = "参数名/参数ID集合（633 only）")
     private List<String> paraList;
@@ -52,8 +55,10 @@ public class UnifiedSortieRequest {
     public void setFileName(String fileName) { this.fileName = fileName; }
     public String getFileType() { return fileType; }
     public void setFileType(String fileType) { this.fileType = fileType; }
-    public Object getFlightNum() { return flightNum; }
-    public void setFlightNum(Object flightNum) { this.flightNum = flightNum; }
+    public String getFlightNum() { return flightNum; }
+    public void setFlightNum(String flightNum) { this.flightNum = flightNum; }
+    public Long getSortieId() { return sortieId; }
+    public void setSortieId(Long sortieId) { this.sortieId = sortieId; }
     public List<String> getParaList() { return paraList; }
     public void setParaList(List<String> paraList) { this.paraList = paraList; }
 
@@ -84,23 +89,19 @@ public class UnifiedSortieRequest {
     }
 
     /** 转为本地 Sortie 表的查询条件。
-     *  flightNum（映射 sortieId 或 sortieNumber）是主条件，
-     *  只要它正确就能查出结果，其他参数错误不影响本地查询。 */
+     *  sortieId 优先（精确匹配主键），其次是 flightNum（按 sortieNumber 匹配），
+     *  最后降级用 airplaneNum 过滤。 */
     public LambdaQueryWrapper<Sortie> toLocalQuery() {
         LambdaQueryWrapper<Sortie> wrapper = Wrappers.lambdaQuery();
-        if (flightNum != null) {
-            String flightNumStr = flightNum.toString().trim();
-            if (!flightNumStr.isEmpty()) {
-                try {
-                    Long id = Long.parseLong(flightNumStr);
-                    wrapper.eq(Sortie::getSortieId, id);
-                } catch (NumberFormatException e) {
-                    wrapper.eq(Sortie::getSortieNumber, flightNumStr);
-                }
-                return wrapper; // flightNum 为主条件，忽略其他参数
-            }
+        if (sortieId != null) {
+            wrapper.eq(Sortie::getSortieId, sortieId);
+            return wrapper;
         }
-        // 未传 flightNum 时降级用 airplaneNum 过滤
+        if (flightNum != null && !flightNum.isEmpty()) {
+            wrapper.eq(Sortie::getSortieNumber, flightNum);
+            return wrapper;
+        }
+        // 未传 sortieId / flightNum 时降级用 airplaneNum 过滤
         if (airplaneNum != null && !airplaneNum.isEmpty()) {
             wrapper.eq(Sortie::getAircraftNumber, airplaneNum);
         }
