@@ -1,7 +1,9 @@
+server:
+  port: 8085
 spring:
   datasource:
     driver-class-name: dm.jdbc.driver.DmDriver
-    url: jdbc:dm://127.0.0.1:5236?schema=SYSDBA
+    url: jdbc:dm://127.0.0.1:5236?schema=SYSDBA&useUnicode=true&characterEncoding=GBK
     username: SYSDBA
     password: Root123456
   servlet:
@@ -29,3 +31,8 @@ springdoc:
     operations-sorter: alpha
   packages-to-scan: com.project.phm.controller
   default-flat-param-object: true
+
+# 支持系统 API 路径配置（base URL 存于 DB external_platform 表）
+support-system:
+  paths:
+    getDzgxxx: /api/v1/config/dzgxxx

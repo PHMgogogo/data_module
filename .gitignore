@@ -43,3 +43,12 @@ package-lock.json
 ### Documentation ###
 *.md
 部署/
+
+### 数据库导出文件 ###
+*.sql
+*.bak
+*.dmp
+
+### 本地配置（个人环境，不入库） ###
+.claude/
+local.properties
