@@ -47,10 +47,10 @@ public class UnifiedConfigItemService {
         this.configPath = configPath;
     }
 
-    /** 来源名称 → 平台名称映射 */
+    /** 来源名称 → 平台名称映射（兼容统一查询用的 sansan/hangxin 标识） */
     private static String platformName(String source) {
-        if ("633".equals(source)) return "633服务";
-        if ("航新".equals(source)) return "航新服务";
+        if ("633".equals(source) || "sansan".equals(source)) return "633服务";
+        if ("航新".equals(source) || "hangxin".equals(source)) return "航新服务";
         return source;
     }
 
@@ -75,7 +75,12 @@ public class UnifiedConfigItemService {
         dataList.addAll(hangxin);
 
         ApiResult<List<UnifiedConfigResponse>> result = ApiResult.success(dataList);
-        result.setLocal(new SourceInfo(local.size(), local.isEmpty() ? "未提供机型" : SUCCESS));
+        String localMsg = SUCCESS;
+        if (local.isEmpty()) {
+            boolean noModel = request.getModelCode() == null || request.getModelCode().trim().isEmpty();
+            localMsg = noModel ? "未提供机型" : "本地无构型数据";
+        }
+        result.setLocal(new SourceInfo(local.size(), localMsg));
         result.setSansan(new SourceInfo(sanSan.size(), sanSan.isEmpty() ? "633未返回数据" : SUCCESS));
         result.setHangxin(new SourceInfo(hangxin.size(), hangxin.isEmpty() ? "航新未返回数据" : SUCCESS));
         return result;
