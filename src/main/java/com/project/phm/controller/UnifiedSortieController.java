@@ -84,7 +84,9 @@ public class UnifiedSortieController {
     }
 
     @Operation(summary = "聚合查询单机",
-            description = "查询航新、633 和本地三个数据源的单机信息，按 aircraftNumber 去重合并后返回统一的响应列表。")
+            description = "查询航新、633 和本地三个数据源的单机信息，合并后返回统一的响应列表。\n\n" +
+                    "**筛选规则**：不传参返回各源全部单机（本地无机号时也全量返回）；传 airplaneType 按机型过滤、传 airplaneNum 按机号过滤。\n\n" +
+                    "**响应说明**：data 为各源直接拼接，不做跨源去重，同号飞机可能来自多个来源，以 source 字段区分；hangxin/sansan/local 分别记录各源的查询条数和状态。")
     @GetMapping("/aircraft/query")
     public ResponseEntity<ApiResult<List<UnifiedAircraftResponse>>> queryAircraft(
             @RequestParam(value = "airplaneType", required = false) String airplaneType,
@@ -97,7 +99,9 @@ public class UnifiedSortieController {
     }
 
     @Operation(summary = "聚合查询单机构型",
-            description = "查询航新、633 和本地三个数据源的单机构型信息，按 nodeId 去重合并后返回统一的响应列表。")
+            description = "查询航新、633 和本地三个数据源的单机构型信息，合并后返回统一的响应列表。\n\n" +
+                    "**筛选规则**：不传 modelCode 返回本地全部机型及外源的全部构型；传 modelCode 仅查该机型的构型。\n\n" +
+                    "**响应说明**：data 为各源直接拼接，不做跨源去重，以 source 字段区分来源。")
     @GetMapping("/config/query")
     public ResponseEntity<ApiResult<List<UnifiedConfigResponse>>> queryConfigItems(
             @RequestParam(value = "modelCode", required = false) String modelCode,

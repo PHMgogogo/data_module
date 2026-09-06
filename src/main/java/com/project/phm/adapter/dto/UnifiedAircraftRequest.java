@@ -27,6 +27,9 @@ public class UnifiedAircraftRequest {
         if (airplaneType != null && !airplaneType.isEmpty()) {
             params.put("airplaneType", airplaneType);
         }
+        if (airplaneNum != null && !airplaneNum.isEmpty()) {
+            params.put("airplaneNum", airplaneNum);
+        }
         return params;
     }
 

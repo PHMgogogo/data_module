@@ -135,6 +135,15 @@ public class AircraftConfigService {
                         .orderByAsc(ConfigItem::getAtaChapter, ConfigItem::getItemId));
     }
 
+    /**
+     * 获取所有机型的构型项目（不过滤机型），按 GJB 章节排序。
+     */
+    public List<ConfigItem> listAllItems() {
+        return configItemMapper.selectList(
+                Wrappers.<ConfigItem>lambdaQuery()
+                        .orderByAsc(ConfigItem::getAtaChapter, ConfigItem::getItemId));
+    }
+
     public ConfigItem getItem(Long itemId) {
         return configItemMapper.selectById(itemId);
     }

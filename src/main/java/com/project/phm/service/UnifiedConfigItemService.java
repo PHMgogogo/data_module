@@ -75,12 +75,7 @@ public class UnifiedConfigItemService {
         dataList.addAll(hangxin);
 
         ApiResult<List<UnifiedConfigResponse>> result = ApiResult.success(dataList);
-        String localMsg = SUCCESS;
-        if (local.isEmpty()) {
-            boolean noModel = request.getModelCode() == null || request.getModelCode().trim().isEmpty();
-            localMsg = noModel ? "未提供机型" : "本地无构型数据";
-        }
-        result.setLocal(new SourceInfo(local.size(), localMsg));
+        result.setLocal(new SourceInfo(local.size(), local.isEmpty() ? "本地无构型数据" : SUCCESS));
         result.setSansan(new SourceInfo(sanSan.size(), sanSan.isEmpty() ? "633未返回数据" : SUCCESS));
         result.setHangxin(new SourceInfo(hangxin.size(), hangxin.isEmpty() ? "航新未返回数据" : SUCCESS));
         return result;
@@ -90,10 +85,10 @@ public class UnifiedConfigItemService {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String modelCode = request.getModelCode();
-                if (modelCode == null || modelCode.isEmpty()) {
-                    return Collections.emptyList();
-                }
-                List<ConfigItem> items = aircraftConfigService.listItems(modelCode);
+                // 未指定机型：默认列出本地全部机型的构型项目，行为与航新/633 一致
+                List<ConfigItem> items = (modelCode == null || modelCode.isEmpty())
+                        ? aircraftConfigService.listAllItems()
+                        : aircraftConfigService.listItems(modelCode);
                 return items.stream()
                         .map(UnifiedConfigResponse::fromLocal)
                         .filter(Objects::nonNull)
@@ -115,10 +110,14 @@ public class UnifiedConfigItemService {
                     log.warn("{}未配置 base URL", platName);
                     return Collections.emptyList();
                 }
-                String fullUrl = UriComponentsBuilder.fromHttpUrl(baseUrl + configPath)
+                UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(baseUrl + configPath)
                         .queryParam("page", request.getPageNum() != null ? request.getPageNum() : 1)
-                        .queryParam("rows", request.getPageSize() != null ? request.getPageSize() : 10)
-                        .build().toUriString();
+                        .queryParam("rows", request.getPageSize() != null ? request.getPageSize() : 10);
+                // 指定机型时按 modelCode 过滤外源构型；不传则返回外源全量
+                if (request.getModelCode() != null && !request.getModelCode().isEmpty()) {
+                    urlBuilder = urlBuilder.queryParam("modelCode", request.getModelCode());
+                }
+                String fullUrl = urlBuilder.build().toUriString();
 
                 String json = supportRestTemplate.getForObject(fullUrl, String.class);
                 if (json == null || json.isEmpty()) {

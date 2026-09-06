@@ -60,7 +60,9 @@ public class UnifiedAircraftService {
         dataList.addAll(hangxin);
 
         ApiResult<List<UnifiedAircraftResponse>> result = ApiResult.success(dataList);
-        result.setLocal(new SourceInfo(local.size(), local.isEmpty() ? "本机未找到该单机" : SUCCESS));
+        boolean hasNum = request.getAirplaneNum() != null && !request.getAirplaneNum().isEmpty();
+        result.setLocal(new SourceInfo(local.size(),
+                local.isEmpty() ? (hasNum ? "本机未找到该单机" : "本机无单机数据") : SUCCESS));
         result.setSansan(new SourceInfo(sanSan.size(), sanSan.isEmpty() ? "633未返回数据" : SUCCESS));
         result.setHangxin(new SourceInfo(hangxin.size(), hangxin.isEmpty() ? "航新未返回数据" : SUCCESS));
         return result;
@@ -70,11 +72,21 @@ public class UnifiedAircraftService {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String aircraftNum = request.getAirplaneNum();
+                String airplaneType = request.getAirplaneType();
                 if (aircraftNum == null || aircraftNum.isEmpty()) {
-                    return Collections.emptyList();
+                    // 未指定机号：列出本地全部单机（可按机型过滤），行为与航新/633 一致
+                    return aircraftConfigService.listPlanes(airplaneType).stream()
+                            .map(UnifiedAircraftResponse::fromLocal)
+                            .filter(Objects::nonNull)
+                            .collect(Collectors.toList());
                 }
                 Aircraft plane = aircraftConfigService.getPlane(aircraftNum);
                 if (plane == null) {
+                    return Collections.emptyList();
+                }
+                // 同时指定机型时校验一致性，不一致视为未命中
+                if (airplaneType != null && !airplaneType.isEmpty()
+                        && !airplaneType.equals(plane.getModelCode())) {
                     return Collections.emptyList();
                 }
                 UnifiedAircraftResponse r = UnifiedAircraftResponse.fromLocal(plane);
