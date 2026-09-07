@@ -37,7 +37,7 @@ import java.util.List;
  * 按统一模式扩展。</p>
  */
 @RestController
-@RequestMapping("/api/unified")
+@RequestMapping("/unified")
 @Tag(name = "06-统一数据聚合查询")
 public class UnifiedSortieController {
 

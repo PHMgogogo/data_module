@@ -16,7 +16,7 @@ import java.util.Map;
  * 外来平台配置管理 — CRUD + 连通性测试。
  */
 @RestController
-@RequestMapping("/api/external-platforms")
+@RequestMapping("/external-platforms")
 @Tag(name = "07-外来平台配置管理")
 public class PlatformConfigController {
 
