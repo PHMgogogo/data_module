@@ -87,22 +87,36 @@ public class UnifiedConfigResponse {
         return r;
     }
 
-    /** 从外部（633/航新）返回的 data 条目（Map）构造统一的响应行 */
+    /**
+     * 从外部（633/航新）返回的 data 条目（Map）构造统一的响应行。
+     *
+     * <p>兼容外部字段名大小写：优先精确匹配 GXBS/SJGXBS/GXMC/SSFJH/JJH/AZWZ，
+     * 找不到再做一次忽略大小写的查找。外部返回的这六类字段可能缺失（留空），
+     * 也可能返回更多其它字段——除这六类外一概忽略，不会进入统一响应。</p>
+     */
     public static UnifiedConfigResponse fromExternal(Map<String, Object> row, String source) {
         if (row == null) return null;
         UnifiedConfigResponse r = new UnifiedConfigResponse();
         r.source = source;
-        r.nodeId = toString(row.get("GXBS"));
-        r.parentNodeId = toString(row.get("SJGXBS"));
-        r.nodeName = toString(row.get("GXMC"));
+        r.nodeId = pick(row, "GXBS");
+        r.parentNodeId = pick(row, "SJGXBS");
+        r.nodeName = pick(row, "GXMC");
         r.nodeType = "CONFIG";
-        r.aircraftNo = toString(row.get("SSFJH"));
-        r.equipmentNo = toString(row.get("JJH"));
-        r.installPosition = toString(row.get("AZWZ"));
+        r.aircraftNo = pick(row, "SSFJH");
+        r.equipmentNo = pick(row, "JJH");
+        r.installPosition = pick(row, "AZWZ");
         return r;
     }
 
-    private static String toString(Object val) {
-        return val != null ? val.toString() : null;
+    /** 按目标字段名取值（忽略大小写），仅取首个非空值；无匹配返回 null。 */
+    private static String pick(Map<String, Object> row, String key) {
+        Object exact = row.get(key);
+        if (exact != null) return exact.toString();
+        for (Map.Entry<String, Object> e : row.entrySet()) {
+            if (e.getKey() != null && e.getKey().equalsIgnoreCase(key) && e.getValue() != null) {
+                return e.getValue().toString();
+            }
+        }
+        return null;
     }
 }

@@ -118,11 +118,18 @@ public class UnifiedConfigItemService {
                     urlBuilder = urlBuilder.queryParam("modelCode", request.getModelCode());
                 }
                 String fullUrl = urlBuilder.build().toUriString();
+                log.info("[外来平台调用] {} 请求方式: GET, URL: {}, 参数: page={}(Integer), rows={}(Integer){}",
+                        platName, fullUrl,
+                        request.getPageNum() != null ? request.getPageNum() : 1,
+                        request.getPageSize() != null ? request.getPageSize() : 10,
+                        (request.getModelCode() != null && !request.getModelCode().isEmpty())
+                                ? ", modelCode=" + request.getModelCode() + "(String)" : "");
 
                 String json = supportRestTemplate.getForObject(fullUrl, String.class);
                 if (json == null || json.isEmpty()) {
                     return Collections.emptyList();
                 }
+                log.info("[外来平台调用] {} 请求方式: GET, URL: {} 原始返回: {}", platName, fullUrl, json);
 
                 return parseExternalConfig(json, sourceName);
             } catch (Exception e) {

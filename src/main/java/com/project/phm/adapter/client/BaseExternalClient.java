@@ -51,26 +51,52 @@ public abstract class BaseExternalClient {
     // ==================== 架次查询 ====================
 
     public List<ExternalSortieData> querySorties(Map<String, Object> params) {
-        String json = restTemplate.postForObject(buildUrl(SORTIE_PATH), params, String.class);
+        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(buildUrl(SORTIE_PATH));
+        if (params != null && !params.isEmpty()) {
+            for (Map.Entry<String, Object> e : params.entrySet()) {
+                Object value = e.getValue();
+                if (value == null) continue;
+                if (value instanceof List) {
+                    // List 值（如 633 的 ParaList）按同名参数重复拼接
+                    for (Object item : (List<?>) value) {
+                        if (item != null) builder.queryParam(e.getKey(), item);
+                    }
+                } else {
+                    builder.queryParam(e.getKey(), value);
+                }
+            }
+        }
+        String url = builder.build().toUriString();
+        printRequest("GET", url, params);
+        String json = restTemplate.getForObject(url, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] 外来平台返回空响应", getPlatformName());
             return Collections.emptyList();
         }
+        printRawResponse("GET", url, json);
         return parseSortieResponse(json);
     }
 
     // ==================== 机型查询 ====================
 
     public List<ExternalModelData> queryModels(Map<String, Object> params) {
-        String url = UriComponentsBuilder.fromHttpUrl(buildUrl(MODEL_PATH))
-                .queryParam("airplaneType", params.getOrDefault("airplaneType", ""))
-                .build().toUriString();
+        UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(buildUrl(MODEL_PATH));
+        if (params != null) {
+            // 缺省视为 null：仅在携带值时拼入 airplaneType，避免向第三方传空串
+            Object airplaneType = params.get("airplaneType");
+            if (airplaneType != null) {
+                urlBuilder.queryParam("airplaneType", airplaneType);
+            }
+        }
+        String url = urlBuilder.build().toUriString();
+        printRequest("GET", url, params);
 
         String json = restTemplate.getForObject(url, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] 外来平台机型接口返回空响应", getPlatformName());
             return Collections.emptyList();
         }
+        printRawResponse("GET", url, json);
         return parseModelResponse(json);
     }
 
@@ -78,39 +104,84 @@ public abstract class BaseExternalClient {
 
     public Object postForRawData(String path, Object body) {
         String fullUrl = buildUrl(path);
+        printRequest("POST", fullUrl, body);
         String json = restTemplate.postForObject(fullUrl, body, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] POST 接口返回空响应: {}", getPlatformName(), path);
             return null;
         }
+        printRawResponse("POST", fullUrl, json);
         return parseRawData(json);
     }
 
     /** POST 请求，返回原始 JSON 字符串（由调用方自行解析） */
     public String postForRawJson(String path, Object body) {
         String fullUrl = buildUrl(path);
+        printRequest("POST", fullUrl, body);
         String json = restTemplate.postForObject(fullUrl, body, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] POST 接口返回空响应: {}", getPlatformName(), path);
             return null;
         }
+        printRawResponse("POST", fullUrl, json);
         return json;
     }
 
     // ==================== 通用 GET（原始 data） ====================
 
     public Object queryForRawData(String path, Map<String, Object> params) {
-        String url = UriComponentsBuilder.fromHttpUrl(buildUrl(path))
-                .queryParam("airplaneType", params.getOrDefault("airplaneType", ""))
-                .queryParam("airplaneNum", params.getOrDefault("airplaneNum", ""))
-                .build().toUriString();
+        UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(buildUrl(path));
+        if (params != null) {
+            // 缺省视为 null：仅在携带值时拼入 airplaneType/airplaneNum，避免向第三方传空串
+            Object airplaneType = params.get("airplaneType");
+            Object airplaneNum = params.get("airplaneNum");
+            if (airplaneType != null) {
+                urlBuilder.queryParam("airplaneType", airplaneType);
+            }
+            if (airplaneNum != null) {
+                urlBuilder.queryParam("airplaneNum", airplaneNum);
+            }
+        }
+        String url = urlBuilder.build().toUriString();
+        printRequest("GET", url, params);
 
         String json = restTemplate.getForObject(url, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] 接口返回空响应: {}", getPlatformName(), path);
             return null;
         }
+        printRawResponse("GET", url, json);
         return parseRawData(json);
+    }
+
+    // ==================== HTTP 调用日志 ====================
+
+    /** 打印请求：输出可直接复制执行的 curl 命令 */
+    private void printRequest(String method, String url, Object params) {
+        StringBuilder cmd = new StringBuilder("curl -X ")
+                .append(method).append(" \"").append(url).append('"');
+        // GET/DELETE 无 body；POST/PUT 把请求参数序列化为 JSON body
+        if (!"GET".equalsIgnoreCase(method) && !"DELETE".equalsIgnoreCase(method)) {
+            cmd.append(" \\\n  -H \"Content-Type: application/json\" \\\n  -d '")
+                    .append(toRequestBodyJson(params)).append('\'');
+        }
+        log.info("[外来平台调用] {} 请求命令:\n{}", getPlatformName(), cmd);
+    }
+
+    /** 打印外来平台返回的原始响应 */
+    private void printRawResponse(String method, String url, String rawJson) {
+        log.info("[外来平台调用] {} 请求方式: {}, URL: {} 原始返回: {}",
+                getPlatformName(), method, url, rawJson);
+    }
+
+    /** 请求参数序列化为 JSON body，null/序列化失败时回退为空对象或原文 */
+    private String toRequestBodyJson(Object params) {
+        if (params == null) return "{}";
+        try {
+            return objectMapper.writeValueAsString(params);
+        } catch (JsonProcessingException e) {
+            return String.valueOf(params);
+        }
     }
 
     // ==================== JSON 解析 ====================
