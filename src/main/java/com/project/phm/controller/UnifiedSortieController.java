@@ -71,8 +71,17 @@ public class UnifiedSortieController {
         return ResponseEntity.ok(result);
     }
 
-    @Operation(summary = "聚合查询机型",
-            description = "并发查询航新、633 和本地三个数据源的机型数据，合并后返回统一的响应列表。\n\n" +
+    /**
+     * 聚合查询机型（已废弃）。
+     *
+     * @deprecated 请改用 {@code GET /aircraft/models}，该接口已聚合本地、航新、633 三个数据源。
+     */
+    @Deprecated
+    @Operation(summary = "【已废弃】聚合查询机型",
+            deprecated = true,
+            description = "**⚠️ 已废弃**，请改用 `GET /aircraft/models`：返回裸数组，已聚合本地 + 航新 + 633；" +
+                    "第三方行 `modelCode` 为 `airplaneType:id`，`manufacturer`/`description`/`createdAt` 固定为 `\"-\"`。\n\n" +
+                    "**（历史说明）** 并发查询航新、633 和本地三个数据源的机型数据，合并后返回统一的响应列表。\n\n" +
                     "**airplaneType**：本地按 modelCode 模糊匹配；航新/633 按 airplaneType 精确匹配。")
     @GetMapping("/model/query")
     public ResponseEntity<ApiResult<List<UnifiedModelResponse>>> queryModels(

@@ -31,7 +31,10 @@ public class AircraftController {
     // ==================== 机型管理 ====================
 
     @Operation(summary = "获取所有机型列表",
-            description = "返回数据库中所有机型（aircraft_model表）的列表。")
+            description = "返回机型列表：先取本地 aircraft_model 表全部机型，再依次拼接航新、633 平台的机型。\n\n" +
+                    "**合并规则**：跨源不去重，顺序为 本地 → 航新 → 633。\n" +
+                    "**第三方行字段**：`modelCode` 为 `airplaneType:id`；`manufacturer` / `description` / `createdAt` 固定为 `\"-\"`。\n" +
+                    "**容错**：任一第三方平台未配置或不可达时仅跳过该平台，本地数据仍以 HTTP 200 返回。")
     @Tag(name = "01-机型管理")
     @GetMapping("/models")
     public ResponseEntity<?> listModels() {

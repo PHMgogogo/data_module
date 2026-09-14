@@ -1,12 +1,19 @@
 package com.project.phm.service;
 
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
+import com.project.phm.adapter.client.BaseExternalClient;
+import com.project.phm.adapter.client.HangxinSortieClient;
+import com.project.phm.adapter.client.SanSanSortieClient;
+import com.project.phm.adapter.dto.ExternalModelData;
 import com.project.phm.entity.*;
 import com.project.phm.mapper.*;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
@@ -15,29 +22,129 @@ import java.util.stream.Collectors;
 @Service
 public class AircraftConfigService {
 
+    private static final Logger log = LoggerFactory.getLogger(AircraftConfigService.class);
+
+    /** 第三方平台机型行 manufacturer / description / createdAt 的占位符 */
+    private static final String PLACEHOLDER = "-";
+
+    private static final String LABEL_HANGXIN = "航新";
+    private static final String LABEL_SANSAN = "633";
+
     private final AircraftModelMapper aircraftModelMapper;
     private final AircraftConfigMapper aircraftConfigMapper;
     private final ConfigItemMapper configItemMapper;
     private final ConfigDataMappingMapper configDataMappingMapper;
     private final SortieMapper sortieMapper;
+    private final HangxinSortieClient hangxinClient;
+    private final SanSanSortieClient sanSanClient;
 
     public AircraftConfigService(AircraftModelMapper aircraftModelMapper,
                                   AircraftConfigMapper aircraftConfigMapper,
                                   ConfigItemMapper configItemMapper,
                                   ConfigDataMappingMapper configDataMappingMapper,
-                                  SortieMapper sortieMapper) {
+                                  SortieMapper sortieMapper,
+                                  HangxinSortieClient hangxinClient,
+                                  SanSanSortieClient sanSanClient) {
         this.aircraftModelMapper = aircraftModelMapper;
         this.aircraftConfigMapper = aircraftConfigMapper;
         this.configItemMapper = configItemMapper;
         this.configDataMappingMapper = configDataMappingMapper;
         this.sortieMapper = sortieMapper;
+        this.hangxinClient = hangxinClient;
+        this.sanSanClient = sanSanClient;
     }
 
     // ==================== 机型管理 ====================
 
+    /**
+     * 查询全部机型：本地 aircraft_model 行在前，随后依次拼接航新、633 平台的机型，跨源不去重。
+     *
+     * <p>第三方行的 modelCode 为 {@code airplaneType + ":" + id}，manufacturer / description /
+     * createdAt 固定为 {@code "-"}；这些实例仅用于响应，不参与任何持久化。</p>
+     *
+     * <p>任一第三方平台未配置或不可达时仅跳过该平台并记日志，本地数据照常返回；
+     * 本地库异常不吞，直接向上抛出由控制器返回 500。</p>
+     */
     public List<AircraftModel> listModels() {
+        // 空 Map 表示不携带任何过滤条件：BaseExternalClient.queryModels 仅在
+        // params 中 airplaneType 非 null 时才拼接该参数，故等价于查询三方全部机型。
+        Map<String, Object> noFilter = Collections.emptyMap();
+
+        // 先派发两个外源请求，使其与下面的本地查询重叠执行
+        CompletableFuture<List<AircraftModel>> hangxinFuture =
+                CompletableFuture.supplyAsync(() -> queryModelsSafe(hangxinClient, LABEL_HANGXIN, noFilter));
+        CompletableFuture<List<AircraftModel>> sanSanFuture =
+                CompletableFuture.supplyAsync(() -> queryModelsSafe(sanSanClient, LABEL_SANSAN, noFilter));
+
+        // 本地查询内联执行：异常不吞，由控制器按既有逻辑返回 500
+        List<AircraftModel> localModels = listLocalModels();
+
+        int localCount = localModels == null ? 0 : localModels.size();
+        List<AircraftModel> merged = new ArrayList<>(localCount + 16);
+        if (localModels != null) {
+            merged.addAll(localModels);
+        }
+
+        List<AircraftModel> hangxinModels = joinSafe(hangxinFuture, LABEL_HANGXIN);
+        List<AircraftModel> sanSanModels = joinSafe(sanSanFuture, LABEL_SANSAN);
+        merged.addAll(hangxinModels);
+        merged.addAll(sanSanModels);
+
+        log.info("/aircraft/models 聚合完成: 本地={}, 航新={}, 633={}, 合计={}",
+                localCount, hangxinModels.size(), sanSanModels.size(), merged.size());
+        return merged;
+    }
+
+    /** 仅查本地 aircraft_model 表，按机型代码升序 */
+    public List<AircraftModel> listLocalModels() {
         return aircraftModelMapper.selectList(
                 Wrappers.<AircraftModel>lambdaQuery().orderByAsc(AircraftModel::getModelCode));
+    }
+
+    // ==================== 外源机型查询（带异常隔离） ====================
+
+    /** 单平台查询：未配置 / 不可达 / 超时 / HTTP 4xx-5xx / 解析异常均在此吞掉 */
+    private List<AircraftModel> queryModelsSafe(BaseExternalClient client, String label,
+                                                Map<String, Object> params) {
+        try {
+            return toModels(client.queryModels(params));
+        } catch (Exception e) {
+            log.warn("{}机型查询失败，已跳过该数据源: {}", label, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * 第三方行转为响应载体：modelCode = airplaneType + ":" + id，其余三字段为占位符。
+     */
+    private List<AircraftModel> toModels(List<ExternalModelData> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<AircraftModel> models = new ArrayList<>(raw.size());
+        for (ExternalModelData ext : raw) {
+            if (ext == null) {
+                continue;
+            }
+            AircraftModel model = new AircraftModel();
+            model.setModelCode(ext.getAirplaneType() + ":" + ext.getId());
+            model.setManufacturer(PLACEHOLDER);
+            model.setDescription(PLACEHOLDER);
+            model.setCreatedAt(PLACEHOLDER);
+            models.add(model);
+        }
+        return models;
+    }
+
+    /** 兜底 join：正常情况下 future 内的 try/catch 已保证不抛异常 */
+    private List<AircraftModel> joinSafe(CompletableFuture<List<AircraftModel>> future, String label) {
+        try {
+            List<AircraftModel> list = future.join();
+            return list == null ? Collections.<AircraftModel>emptyList() : list;
+        } catch (Exception e) {
+            log.warn("{}机型聚合任务异常，已跳过该数据源: {}", label, e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     public AircraftModel getModel(String modelCode) {
