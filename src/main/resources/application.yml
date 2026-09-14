@@ -35,4 +35,4 @@ springdoc:
 # 支持系统 API 路径配置（base URL 存于 DB external_platform 表）
 support-system:
   paths:
-    getDzgxxx: /api/v1/config/dzgxxx
+    getDzgxxx: /external/sync/getDzgxxx
