@@ -144,8 +144,20 @@ public class UnifiedSortieController {
         return ResponseEntity.ok(result);
     }
 
-    @Operation(summary = "聚合查询时序数据",
-            description = "查询本地、633 和航新三个数据源的时序数据。\n\n" +
+    /**
+     * 聚合查询时序数据（已废弃）。
+     *
+     * @deprecated 请改用 {@code POST /csv/query-timeseries}：按架次定位三个数据源，
+     *             只返回实际有数据的那个源，响应体为统一的 timestamps + parameters。
+     */
+    @Deprecated
+    @Operation(summary = "【已废弃】聚合查询时序数据",
+            deprecated = true,
+            description = "**⚠️ 已废弃**，请改用 `POST /csv/query-timeseries`：" +
+                    "请求体为 `sortieId` / `aircraftNumber` / `sortieNumber` / `paralist` / `samplingRate`，" +
+                    "响应体为统一的 `data.timestamps` + `data.parameters[{name, values}]`，" +
+                    "且按机号/架次过滤后只返回有数据的那个平台（优先级 本地 → 航新 → 633）。\n\n" +
+                    "**（历史说明）** 查询本地、633 和航新三个数据源的时序数据。\n\n" +
                     "**注意**：本地 CSV 文件以 base64 编码放入 data 列表。\n" +
                     "data 为异构列表：[{本地文件(base64)}, {633返回}, {航新返回}]。")
     @PostMapping("/timeseries/query")

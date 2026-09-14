@@ -7,6 +7,7 @@ import com.project.phm.entity.ConfigDataMapping;
 import com.project.phm.entity.ValidationResult;
 import com.project.phm.service.AircraftConfigService;
 import com.project.phm.service.CsvService;
+import com.project.phm.service.UnifiedTimeSeriesService;
 import com.project.phm.utils.CsvColumnAnalyzer;
 import com.project.phm.utils.CsvColumnAnalyzer.AnalysisResult;
 import com.project.phm.utils.DataValidationUtils;
@@ -43,17 +44,20 @@ public class CsvController {
     private final DbUtils dbUtils;
     private final CsvColumnAnalyzer columnAnalyzer;
     private final AircraftConfigService aircraftConfigService;
+    private final UnifiedTimeSeriesService timeSeriesService;
 
     public CsvController(CsvService csvService,
                          DataValidationUtils validationUtils,
                          DbUtils dbUtils,
                          CsvColumnAnalyzer columnAnalyzer,
-                         AircraftConfigService aircraftConfigService) {
+                         AircraftConfigService aircraftConfigService,
+                         UnifiedTimeSeriesService timeSeriesService) {
         this.csvService = csvService;
         this.validationUtils = validationUtils;
         this.dbUtils = dbUtils;
         this.columnAnalyzer = columnAnalyzer;
         this.aircraftConfigService = aircraftConfigService;
+        this.timeSeriesService = timeSeriesService;
     }
 
     /**
@@ -538,17 +542,21 @@ public class CsvController {
     // ==================== 时序数据统一查询接口 ====================
 
     /**
-     * 本地时序数据查询（统一接口）
+     * 时序数据查询（本地 + 航新 + 633）
      *
-     * <p>实现「统一接口调用.md」定义的时序数据查询接口。
-     * 从达梦 csv_xxx 表查询指定参数的时间序列，返回统一格式的响应。</p>
+     * <p>按架次定位：本地用 sortieId 查关联的 csv_xxx 表；航新 / 633 用机号 + 架次号，
+     * 先查三方架次接口拿到起止时间（转成 ISO 形式）再查三方时序接口。
+     * 过滤后实际只有归属平台会返回数据，因此只返回第一个有数据的源，不做拼接。</p>
      *
      * <p><b>请求示例：</b></p>
      * <pre>{@code
      * POST /csv/query-timeseries
      * {
-     *   "tableName": "csv_engine_vibration",
-     *   "paralist": ["fan_vibration", "egt_actual"]
+     *   "sortieId": 1,
+     *   "aircraftNumber": "B-1234",
+     *   "sortieNumber": "CA1234-20260723",
+     *   "paralist": ["ALTITUDE", "SPEED"],
+     *   "samplingRate": "10"
      * }
      * }</pre>
      *
@@ -560,47 +568,39 @@ public class CsvController {
      *   "data": {
      *     "timestamps": [1704067200000, 1704067201000, ...],
      *     "parameters": [
-     *       {"name": "fan_vibration", "values": [2.5, 2.6, ...]},
-     *       {"name": "egt_actual", "values": [450.0, 452.0, ...]}
+     *       {"name": "ALTITUDE", "values": [1000.5, 1001.2, ...]},
+     *       {"name": "SPEED", "values": [300.0, 301.0, ...]}
      *     ]
      *   }
      * }
      * }</pre>
      */
-    @Operation(summary = "本地时序数据查询（统一接口）",
-            description = "从达梦 csv_xxx 表查询指定参数的时序数据，返回 timestamps+parameters 的统一格式。\n\n" +
-                    "**自动推断时间戳列**：优先读取表元数据 timestamp_column，否则按常见列名匹配。\n" +
-                    "**参数**：paralist 为参数名列表（不含时间戳列），tableName 为表名（含 csv_ 前缀）。")
+    @Operation(summary = "时序数据查询（本地 / 航新 / 633）",
+            description = "返回统一格式 `data.timestamps` + `data.parameters[{name, values}]`。\n\n" +
+                    "**定位规则**：`sortieId` → 本地 config_data_mapping 关联的 csv_xxx 表；" +
+                    "`aircraftNumber` + `sortieNumber` → 三方（机号 → airplaneNum、架次号 → flightNum）。\n" +
+                    "**时间**：不需要传 startTime/endTime，后端先查三方架次接口取起止时间，转成 " +
+                    "`2026-07-23T10:30:00.000Z` 形式后传给三方时序接口。\n" +
+                    "**采样率**：`samplingRate` 不传默认 10。\n" +
+                    "**只返回一个源**：按机号 / 架次过滤后只有归属平台有数据，优先级为 本地 → 航新 → 633，" +
+                    "都没有数据时返回空的 timestamps / parameters。")
     @Tag(name = "05-CSV数据管理")
     @PostMapping("/query-timeseries")
     public ResponseEntity<ApiResult<UnifiedTimeSeriesResponse>> queryTimeSeries(
             @RequestBody UnifiedTimeSeriesRequest request) {
         try {
-            // 校验
-            if (request.getTableName() == null || request.getTableName().isEmpty()) {
+            if (request.getSortieId() == null && !request.hasExternalIdentifier()) {
                 return ResponseEntity.badRequest()
-                        .body(ApiResult.error(400, "tableName 不能为空"));
+                        .body(ApiResult.error(400, "请至少提供 sortieId 或 机号/架次号"));
             }
 
-            List<String> paralist = request.getParalist();
-            if (paralist == null || paralist.isEmpty()) {
-                // 向后兼容 columns（逗号分隔字符串）
-                String cols = request.getColumns();
-                if (cols == null || cols.isEmpty()) {
-                    return ResponseEntity.badRequest()
-                            .body(ApiResult.error(400, "paralist 不能为空"));
-                }
-                paralist = Arrays.asList(cols.split("\\s*,\\s*"));
-            }
-
-            UnifiedTimeSeriesResponse resp = csvService.queryTimeSeries(
-                    request.getTableName(), paralist);
+            UnifiedTimeSeriesResponse resp = timeSeriesService.querySingleTimeSeries(request);
             return ResponseEntity.ok(ApiResult.success(resp));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest()
                     .body(ApiResult.error(400, e.getMessage()));
         } catch (Exception e) {
-            log.error("本地时序数据查询异常: {}", e.getMessage(), e);
+            log.error("时序数据查询异常: {}", e.getMessage(), e);
             return ResponseEntity.internalServerError()
                     .body(ApiResult.error(500, "查询失败: " + e.getMessage()));
         }

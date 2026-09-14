@@ -1,27 +1,42 @@
 package com.project.phm.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
+import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.project.phm.adapter.client.BaseExternalClient;
 import com.project.phm.adapter.client.HangxinSortieClient;
 import com.project.phm.adapter.client.SanSanSortieClient;
 import com.project.phm.adapter.dto.ApiResult;
+import com.project.phm.adapter.dto.ExternalSortieData;
 import com.project.phm.adapter.dto.SourceInfo;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesRequest;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse;
-import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse.ParameterEntry;
+import com.project.phm.entity.ConfigDataMapping;
+import com.project.phm.mapper.ConfigDataMappingMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
-import java.util.stream.Collectors;
 
 /**
- * 统一时序数据查询编排服务。
+ * 时序数据查询编排服务。
  *
- * <p>将三个数据源的时序数据统一为 {@link UnifiedTimeSeriesResponse} 格式。
- * 本地 CSV 数据作为 base64 编码的 Map 额外返回。</p>
+ * <p>三个数据源的时序数据统一为 {@link UnifiedTimeSeriesResponse} 格式：</p>
+ * <ul>
+ *   <li>本地：按 {@code sortieId} 从 config_data_mapping 查出该架次关联的 csv_xxx 表</li>
+ *   <li>航新 / 633：按机号 + 架次号先查三方架次接口拿到 startTime / endTime
+ *       （转成 {@code 2026-07-23T10:30:00.000Z} 形式），再查三方时序接口</li>
+ * </ul>
+ *
+ * <p>按机号 / 架次过滤后，实际只有归属平台会返回数据，因此新接口
+ * {@link #querySingleTimeSeries} 只挑第一个有数据的源返回，不做拼接。</p>
  */
 @Service
 public class UnifiedTimeSeriesService {
@@ -30,26 +45,251 @@ public class UnifiedTimeSeriesService {
     private static final String SUCCESS = "success";
     private static final String TS_PATH = "/processing/data/querySorties";
 
+    /** 三方时序接口要求的时间格式 */
+    private static final DateTimeFormatter ISO_OUT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+
+    /** 三方架次接口返回的无时区时间格式（按原样加 Z 后缀，不做时区换算） */
+    private static final DateTimeFormatter[] LOCAL_TIME_IN = {
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
+            DateTimeFormatter.ISO_LOCAL_DATE_TIME
+    };
+
     private final HangxinSortieClient hangxinClient;
     private final SanSanSortieClient sanSanClient;
     private final CsvService csvService;
     private final ObjectMapper objectMapper;
+    private final ConfigDataMappingMapper configDataMappingMapper;
 
     public UnifiedTimeSeriesService(HangxinSortieClient hangxinClient,
                                     SanSanSortieClient sanSanClient,
                                     CsvService csvService,
-                                    ObjectMapper objectMapper) {
+                                    ObjectMapper objectMapper,
+                                    ConfigDataMappingMapper configDataMappingMapper) {
         this.hangxinClient = hangxinClient;
         this.sanSanClient = sanSanClient;
         this.csvService = csvService;
         this.objectMapper = objectMapper;
+        this.configDataMappingMapper = configDataMappingMapper;
+    }
+
+    // ==================== 新接口：只返回有数据的那个源 ====================
+
+    /**
+     * 查询时序数据，返回单个平台的结果。
+     *
+     * <p>并发查本地、航新、633：本地有数据优先，其次是航新、633。
+     * 三个源都没有数据时返回空结构（timestamps / parameters 均为空列表）。</p>
+     */
+    public UnifiedTimeSeriesResponse querySingleTimeSeries(UnifiedTimeSeriesRequest request) {
+        String paralistDesc = request.getParalist() == null ? "-" : String.join(",", request.getParalist());
+        log.info("时序查询: sortieId={}, aircraftNumber={}, sortieNumber={}, paralist={}, samplingRate={}",
+                request.getSortieId(), request.getAircraftNumber(), request.getSortieNumber(),
+                paralistDesc, request.samplingRateOrDefault());
+
+        CompletableFuture<UnifiedTimeSeriesResponse> localFuture =
+                CompletableFuture.supplyAsync(() -> queryLocalBySortie(request));
+        CompletableFuture<UnifiedTimeSeriesResponse> hangxinFuture =
+                CompletableFuture.supplyAsync(() -> queryHangxinSingle(request));
+        CompletableFuture<UnifiedTimeSeriesResponse> sanSanFuture =
+                CompletableFuture.supplyAsync(() -> querySanSanSingle(request));
+
+        CompletableFuture.allOf(localFuture, hangxinFuture, sanSanFuture).join();
+
+        UnifiedTimeSeriesResponse local = localFuture.join();
+        UnifiedTimeSeriesResponse hangxin = hangxinFuture.join();
+        UnifiedTimeSeriesResponse sanSan = sanSanFuture.join();
+
+        log.info("时序查询结果: 本地={}, 航新={}, 633={}",
+                desc(local), desc(hangxin), desc(sanSan));
+
+        if (local != null && local.hasData()) return local;
+        if (hangxin != null && hangxin.hasData()) return hangxin;
+        if (sanSan != null && sanSan.hasData()) return sanSan;
+        return UnifiedTimeSeriesResponse.empty();
+    }
+
+    private static String desc(UnifiedTimeSeriesResponse resp) {
+        return resp == null ? "无数据" : (resp.hasData() ? resp.getParameters().size() + "个参数" : "无数据");
+    }
+
+    // ==================== 本地 ====================
+
+    /**
+     * 本地查询：按架次ID查 config_data_mapping 得到该架次关联的 csv_xxx 表名。
+     *
+     * <p>一个架次关联多张表时取最新关联的一张并记日志。</p>
+     */
+    private UnifiedTimeSeriesResponse queryLocalBySortie(UnifiedTimeSeriesRequest request) {
+        try {
+            Long sortieId = request.getSortieId();
+            if (sortieId == null) {
+                return null;
+            }
+            List<ConfigDataMapping> mappings = configDataMappingMapper.selectList(
+                    Wrappers.<ConfigDataMapping>lambdaQuery()
+                            .eq(ConfigDataMapping::getSortieId, sortieId)
+                            .orderByDesc(ConfigDataMapping::getCreatedAt));
+            if (mappings == null || mappings.isEmpty()) {
+                log.warn("本地架次 {} 没有关联任何 csv 数据表", sortieId);
+                return null;
+            }
+            if (mappings.size() > 1) {
+                log.warn("本地架次 {} 关联了 {} 张 csv 表，取最新的一张", sortieId, mappings.size());
+            }
+            // config_data_mapping.csv_table_name 存的是不带 csv_ 前缀的 deviceName
+            String tableName = "csv_" + mappings.get(0).getCsvTableName();
+            return csvService.queryTimeSeries(tableName, request.getParalist());
+        } catch (Exception e) {
+            log.warn("本地时序数据查询失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ==================== 航新 ====================
+
+    /**
+     * 航新时序查询：先用机号 / 架次号查架次接口拿 sortieId 与起止时间，再查时序接口。
+     *
+     * <p>架次接口未命中时无法定位架次，直接跳过（不发起时序查询）。</p>
+     */
+    private UnifiedTimeSeriesResponse queryHangxinSingle(UnifiedTimeSeriesRequest request) {
+        try {
+            ExternalSortieData sortie = findSortie(hangxinClient, request, "航新");
+            if (sortie == null) {
+                log.info("航新未查到该架次，跳过失时序查询");
+                return null;
+            }
+
+            Map<String, Object> params = new HashMap<>();
+            putIfNotNull(params, "sortieId", sortie.getId());
+            putIfNotNull(params, "startTimestamp", toIsoUtc(sortie.getStartTime()));
+            putIfNotNull(params, "endTimestamp", toIsoUtc(sortie.getEndTime()));
+            params.put("samplingRate", request.samplingRateOrDefault());
+            if (request.getParalist() != null && !request.getParalist().isEmpty()) {
+                params.put("parameters", request.getParalist());
+            }
+
+            String json = hangxinClient.postForRawJson(TS_PATH, params);
+            return json == null ? null : UnifiedTimeSeriesResponse.fromHangxinJson(json, objectMapper);
+        } catch (Exception e) {
+            log.warn("航新时序查询失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    // ==================== 633 ====================
+
+    /**
+     * 633 时序查询：startTime / endTime 同样取自三方架次接口（命中时），其余参数直接透传。
+     *
+     * <p>633 不接受 samplingRate，也不使用 sortieId（用 airplaneNum + flightNum 定位架次）。</p>
+     */
+    private UnifiedTimeSeriesResponse querySanSanSingle(UnifiedTimeSeriesRequest request) {
+        try {
+            ExternalSortieData sortie = findSortie(sanSanClient, request, "633");
+
+            Map<String, Object> params = new HashMap<>();
+            putIfNotNull(params, "airplaneType", request.getAirplaneType());
+            putIfNotNull(params, "airplaneNum", request.getAircraftNumber());
+            putIfNotNull(params, "flightNum", request.getSortieNumber());
+            if (request.getParalist() != null && !request.getParalist().isEmpty()) {
+                params.put("Paralist", request.getParalist());
+            }
+            if (sortie != null) {
+                putIfNotNull(params, "startTime", toIsoUtc(sortie.getStartTime()));
+                putIfNotNull(params, "endTime", toIsoUtc(sortie.getEndTime()));
+            }
+
+            String json = sanSanClient.postForRawJson(TS_PATH, params);
+            return json == null ? null : UnifiedTimeSeriesResponse.fromSanSanJson(json, objectMapper);
+        } catch (Exception e) {
+            log.warn("633时序查询失败: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /** 按机号 + 架次号查三方架次接口，取第一条命中记录（失败时返回 null） */
+    private ExternalSortieData findSortie(BaseExternalClient client,
+                                          UnifiedTimeSeriesRequest request, String label) {
+        if (!request.hasExternalIdentifier()) {
+            return null;
+        }
+        Map<String, Object> params = new HashMap<>();
+        putIfNotNull(params, "airplaneNum", request.getAircraftNumber());
+        putIfNotNull(params, "flightNum", request.getSortieNumber());
+
+        List<ExternalSortieData> sorties = client.querySorties(params);
+        if (sorties == null || sorties.isEmpty()) {
+            return null;
+        }
+        for (ExternalSortieData s : sorties) {
+            if (s != null) {
+                log.info("{}架次命中: id={}, startTime={}, endTime={}",
+                        label, s.getId(), s.getStartTime(), s.getEndTime());
+                return s;
+            }
+        }
+        return null;
     }
 
     /**
-     * 查询时序数据。
+     * 三方时间转为 {@code 2026-07-23T10:30:00.000Z} 形式。
      *
-     * <p>data 列表结构：[{本地CSV(base64)}, {633-统一时序}, {航新-统一时序}]。</p>
+     * <p>无时区输入（三方架次返回的 {@code 2026-07-23 10:30:00}）按原值加 Z 后缀；
+     * 带时区/UTC 后缀的输入先换算到 UTC 再格式化；无法识别的格式原样返回。</p>
      */
+    static String toIsoUtc(String raw) {
+        if (raw == null || raw.trim().isEmpty()) {
+            return null;
+        }
+        String value = raw.trim();
+        for (DateTimeFormatter fmt : LOCAL_TIME_IN) {
+            try {
+                return LocalDateTime.parse(value, fmt).format(ISO_OUT);
+            } catch (DateTimeParseException ignored) {
+                // 换下一种格式
+            }
+        }
+        try {
+            Instant instant = OffsetDateTime.parse(value).toInstant();
+            return LocalDateTime.ofInstant(instant, ZoneOffset.UTC).format(ISO_OUT);
+        } catch (DateTimeParseException ignored) {
+            // 换下一种格式
+        }
+        try {
+            return LocalDateTime.ofInstant(Instant.parse(value), ZoneOffset.UTC).format(ISO_OUT);
+        } catch (DateTimeParseException ignored) {
+            log.warn("时间格式无法识别，原样透传给三方: {}", raw);
+            return value;
+        }
+    }
+
+    private static void putIfNotNull(Map<String, Object> map, String key, Object value) {
+        if (value == null) {
+            return;
+        }
+        if (value instanceof String) {
+            if (!((String) value).isEmpty()) {
+                map.put(key, value);
+            }
+        } else {
+            map.put(key, value);
+        }
+    }
+
+    // ==================== 旧接口（/unified/timeseries/query，已废弃） ====================
+
+    /**
+     * 查询三个数据源的时序数据。
+     *
+     * <p>data 列表结构：[本地, 633, 航新]，各源无数据时不出现在列表中。</p>
+     *
+     * @deprecated 改用 {@link #querySingleTimeSeries}（对外接口 {@code POST /csv/query-timeseries}），
+     *             只返回实际有数据的那个源。
+     */
+    @Deprecated
     public ApiResult<List<Object>> queryTimeSeries(UnifiedTimeSeriesRequest request) {
         CompletableFuture<SourceRawResult> localFuture    = queryLocalSafe(request);
         CompletableFuture<SourceRawResult> sanSanFuture   = querySanSanSafe(request);
@@ -76,202 +316,31 @@ public class UnifiedTimeSeriesService {
         return result;
     }
 
-    /** 本地查询：调用 CsvService.queryTimeSeries → 统一格式 */
+    /** 本地分支：按 sortieId 定位关联的 csv 表 */
     private CompletableFuture<SourceRawResult> queryLocalSafe(UnifiedTimeSeriesRequest request) {
         return CompletableFuture.supplyAsync(() -> {
-            try {
-                if (request.getTableName() == null || request.getTableName().isEmpty()) {
-                    return new SourceRawResult(null, "未提供 tableName");
-                }
-
-                // 优先使用 paralist（List），向后兼容 columns（逗号分隔 String）
-                List<String> paralist = request.getParalist();
-                if (paralist == null || paralist.isEmpty()) {
-                    String columnsStr = request.getColumns();
-                    if (columnsStr == null || columnsStr.isEmpty()) {
-                        return new SourceRawResult(null, "未提供 paralist 或 columns");
-                    }
-                    paralist = Arrays.asList(columnsStr.split("\\s*,\\s*"));
-                }
-
-                UnifiedTimeSeriesResponse resp = csvService.queryTimeSeries(
-                        request.getTableName(), paralist);
-                return new SourceRawResult(resp, SUCCESS);
-            } catch (Exception e) {
-                log.warn("本地时序数据查询失败: {}", e.getMessage());
-                return new SourceRawResult(null, "本地查询失败: " + e.getMessage());
+            if (request.getSortieId() == null) {
+                return new SourceRawResult(null, "未提供 sortieId");
             }
+            UnifiedTimeSeriesResponse resp = queryLocalBySortie(request);
+            return resp == null
+                    ? new SourceRawResult(null, "本地未找到该架次关联的数据表")
+                    : new SourceRawResult(resp, SUCCESS);
         });
     }
 
-    /** 633 时序查询：解析响应为统一格式 */
     private CompletableFuture<SourceRawResult> querySanSanSafe(UnifiedTimeSeriesRequest request) {
         return CompletableFuture.supplyAsync(() -> {
-            try {
-                String json = sanSanClient.postForRawJson(TS_PATH, request.toSanSanParams());
-                if (json == null) {
-                    return new SourceRawResult(null, "633未返回数据");
-                }
-                UnifiedTimeSeriesResponse resp = parseSanSanResponse(json);
-                return new SourceRawResult(resp, resp != null ? SUCCESS : "633解析失败");
-            } catch (Exception e) {
-                log.warn("633时序查询失败: {}", e.getMessage());
-                return new SourceRawResult(null, "633查询失败: " + e.getMessage());
-            }
+            UnifiedTimeSeriesResponse resp = querySanSanSingle(request);
+            return new SourceRawResult(resp, resp != null ? SUCCESS : "633未返回数据");
         });
     }
 
-    /** 航新时序查询：解析响应为统一格式 */
     private CompletableFuture<SourceRawResult> queryHangxinSafe(UnifiedTimeSeriesRequest request) {
         return CompletableFuture.supplyAsync(() -> {
-            try {
-                String json = hangxinClient.postForRawJson(TS_PATH, request.toHangxinParams());
-                if (json == null) {
-                    return new SourceRawResult(null, "航新未返回数据");
-                }
-                UnifiedTimeSeriesResponse resp = parseHangxinResponse(json);
-                return new SourceRawResult(resp, resp != null ? SUCCESS : "航新解析失败");
-            } catch (Exception e) {
-                log.warn("航新时序查询失败: {}", e.getMessage());
-                return new SourceRawResult(null, "航新查询失败: " + e.getMessage());
-            }
+            UnifiedTimeSeriesResponse resp = queryHangxinSingle(request);
+            return new SourceRawResult(resp, resp != null ? SUCCESS : "航新未返回数据");
         });
-    }
-
-    // ==================== 响应解析 ====================
-
-    /**
-     * 解析 633 时序响应。
-     *
-     * <p>633 结构：data[].datalist 为扁平 Map，
-     * 其中 "时间戳" 键对应时间轴，其他键为参数名。</p>
-     */
-    private UnifiedTimeSeriesResponse parseSanSanResponse(String json) {
-        try {
-            JsonNode root = objectMapper.readTree(json);
-            int code = root.path("code").asInt(0);
-            if (code != 200) {
-                log.warn("633时序查询返回异常状态码: code={}", code);
-                return null;
-            }
-            JsonNode dataArray = root.path("data");
-            if (!dataArray.isArray() || dataArray.isEmpty()) return null;
-
-            // 取第一条记录的 datalist
-            JsonNode datalist = dataArray.get(0).path("datalist");
-            if (datalist.isMissingNode() || !datalist.isObject()) return null;
-
-            // 提取时间戳列（键名为 "时间戳" 或 "timestamp"，不区分）
-            String timeKey = null;
-            List<String> paramKeys = new ArrayList<>();
-            Iterator<String> fieldNames = datalist.fieldNames();
-            while (fieldNames.hasNext()) {
-                String fn = fieldNames.next();
-                if ("时间戳".equals(fn) || "timestamp".equalsIgnoreCase(fn)) {
-                    timeKey = fn;
-                } else {
-                    paramKeys.add(fn);
-                }
-            }
-            if (timeKey == null) return null;
-
-            // 读取时间轴
-            JsonNode timeArray = datalist.get(timeKey);
-            List<Long> timestamps = new ArrayList<>();
-            if (timeArray.isArray()) {
-                for (JsonNode t : timeArray) {
-                    timestamps.add(t.asLong());
-                }
-            } else {
-                // 单值
-                timestamps.add(timeArray.asLong());
-            }
-
-            // 读取各参数值序列
-            List<ParameterEntry> parameters = new ArrayList<>();
-            for (String pk : paramKeys) {
-                JsonNode valArray = datalist.get(pk);
-                List<Object> values = new ArrayList<>();
-                if (valArray.isArray()) {
-                    for (JsonNode v : valArray) {
-                        values.add(valueToObject(v));
-                    }
-                } else {
-                    values.add(valueToObject(valArray));
-                }
-                parameters.add(ParameterEntry.of(pk, values));
-            }
-
-            UnifiedTimeSeriesResponse resp = new UnifiedTimeSeriesResponse();
-            resp.setTimestamps(timestamps);
-            resp.setParameters(parameters);
-            return resp;
-        } catch (Exception e) {
-            log.warn("633时序响应解析失败: {}", e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * 解析航新时序响应。
-     *
-     * <p>航新结构：data.timestamp[] + data.parameters[{name, dataType, data[]}]</p>
-     */
-    private UnifiedTimeSeriesResponse parseHangxinResponse(String json) {
-        try {
-            JsonNode root = objectMapper.readTree(json);
-            int code = root.path("code").asInt(0);
-            if (code != 200) {
-                log.warn("航新时序查询返回异常状态码: code={}", code);
-                return null;
-            }
-            JsonNode dataNode = root.path("data");
-            if (dataNode.isMissingNode() || dataNode.isNull()) return null;
-
-            // 时间轴（航新使用纳秒级时间戳，统一转为毫秒）
-            JsonNode tsArray = dataNode.path("timestamp");
-            List<Long> timestamps = new ArrayList<>();
-            if (tsArray.isArray()) {
-                for (JsonNode t : tsArray) {
-                    long nanos = t.asLong();
-                    timestamps.add(nanos / 1_000_000L); // 纳秒 → 毫秒
-                }
-            }
-
-            // 参数列表
-            JsonNode paramsArray = dataNode.path("parameters");
-            List<ParameterEntry> parameters = new ArrayList<>();
-            if (paramsArray.isArray()) {
-                for (JsonNode p : paramsArray) {
-                    String name = p.path("name").asText();
-                    JsonNode data = p.path("data");
-                    List<Object> values = new ArrayList<>();
-                    if (data.isArray()) {
-                        for (JsonNode v : data) {
-                            values.add(valueToObject(v));
-                        }
-                    }
-                    parameters.add(ParameterEntry.of(name, values));
-                }
-            }
-
-            UnifiedTimeSeriesResponse resp = new UnifiedTimeSeriesResponse();
-            resp.setTimestamps(timestamps);
-            resp.setParameters(parameters);
-            return resp;
-        } catch (Exception e) {
-            log.warn("航新时序响应解析失败: {}", e.getMessage());
-            return null;
-        }
-    }
-
-    /** JsonNode 转 Java 对象 */
-    private static Object valueToObject(JsonNode node) {
-        if (node == null || node.isNull()) return null;
-        if (node.isIntegralNumber()) return node.longValue();
-        if (node.isFloatingPointNumber()) return node.doubleValue();
-        if (node.isBoolean()) return node.booleanValue();
-        return node.asText();
     }
 
     private static class SourceRawResult {
