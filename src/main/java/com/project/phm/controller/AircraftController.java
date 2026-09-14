@@ -87,9 +87,13 @@ public class AircraftController {
     // ==================== 飞机单机管理 ====================
 
     @Operation(summary = "获取单机列表",
-            description = "获取所有飞机单机，可选按机型过滤。\n\n" +
-                    "**不传modelCode**：返回所有单机\n" +
-                    "**传modelCode**：返回指定机型下的所有单机")
+            description = "返回单机列表：先取本地 aircraft_config 表，再依次拼接航新、633 平台的单机。\n\n" +
+                    "**合并规则**：跨源不去重，顺序为 本地 → 航新 → 633。" +
+                    "`modelCode` 同时作用于本地（按机型过滤）和两个第三方平台（透传为 `airplaneType` 过滤）；" +
+                    "`airplaneNum` 新接口未暴露，向三方传 null。\n" +
+                    "**第三方行字段**：`aircraftNumber` 取原 `airplaneNum`，`modelCode` 取原 `airplaneType`；" +
+                    "`airline` / `configVersion` / `status` / `createdAt` 固定为 `\"-\"`。\n" +
+                    "**容错**：任一第三方平台未配置或不可达时仅跳过该平台，本地数据仍以 HTTP 200 返回。")
     @Tag(name = "02-飞机单机管理")
     @GetMapping("/plane")
     public ResponseEntity<?> listPlanes(@Parameter(description = "机型代码（可选）", example = "B737-800")
@@ -307,14 +311,14 @@ public class AircraftController {
 
     // ==================== 架次管理 ====================
 
-    @Operation(summary = "获取某单机下的架次列表",
-            description = "获取指定单机的所有架次列表，按创建时间降序排列。")
+    @Operation(summary = "获取架次列表",
+            description = "返回架次列表：先取本地 sortie 表，再依次拼接航新、633 平台的架次。")
     @Tag(name = "04-架次管理")
     @GetMapping("/sorties")
-    public ResponseEntity<?> listSorties(@Parameter(description = "机号", required = true, example = "B-1234")
-                                          @RequestParam("aircraftNumber") String aircraftNumber) {
+    public ResponseEntity<?> listSorties(@Parameter(description = "机号（可选，不传返回各源全部架次）", example = "B-1234")
+                                          @RequestParam(value = "aircraftNumber", required = false) String aircraftNumber) {
         try {
-            return ResponseEntity.ok(configService.listSortiesByAircraft(aircraftNumber));
+            return ResponseEntity.ok(configService.listSorties(aircraftNumber));
         } catch (Exception e) {
             return ResponseEntity.status(500).body(errorMap("获取架次列表失败: " + e.getMessage()));
         }

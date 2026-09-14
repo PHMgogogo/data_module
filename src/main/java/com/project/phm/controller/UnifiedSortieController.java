@@ -59,8 +59,18 @@ public class UnifiedSortieController {
         this.unifiedTimeSeriesService = unifiedTimeSeriesService;
     }
 
-    @Operation(summary = "聚合查询架次元数据",
-            description = "并发查询航新、633 和本地三个数据源的架次数据，合并后返回统一的响应列表。\n\n" +
+    /**
+     * 聚合查询架次元数据（已废弃）。
+     *
+     * @deprecated 请改用 {@code GET /aircraft/sorties?aircraftNumber=}，该接口已聚合本地、航新、633 三个数据源。
+     */
+    @Deprecated
+    @Operation(summary = "【已废弃】聚合查询架次元数据",
+            deprecated = true,
+            description = "**⚠️ 已废弃**，请改用 `GET /aircraft/sorties?aircraftNumber=`：返回裸数组，已聚合本地 + 航新 + 633；" +
+                    "第三方行 `sortieId` = 原 `id`、`aircraftNumber` = 原 `airplaneNum`、`sortieNumber` = 原 `flightNum`，" +
+                    "`flightDate`/`startTime`/`endTime` 固定为 `\"-\"`。\n\n" +
+                    "**（历史说明）** 并发查询航新、633 和本地三个数据源的架次数据，合并后返回统一的响应列表。\n\n" +
                     "**合并规则**：以 (机号 + 架次号) 为键匹配，同一架次的记录合并所有字段，不同来源的字段互补。\n\n" +
                     "**响应说明**：data 为合并后的架次列表；hangxin/sansan/local 分别记录各源的查询条数和状态。")
     @PostMapping("/sortie/query")
@@ -92,8 +102,18 @@ public class UnifiedSortieController {
         return ResponseEntity.ok(result);
     }
 
-    @Operation(summary = "聚合查询单机",
-            description = "查询航新、633 和本地三个数据源的单机信息，合并后返回统一的响应列表。\n\n" +
+    /**
+     * 聚合查询单机（已废弃）。
+     *
+     * @deprecated 请改用 {@code GET /aircraft/plane}，该接口已聚合本地、航新、633 三个数据源。
+     */
+    @Deprecated
+    @Operation(summary = "【已废弃】聚合查询单机",
+            deprecated = true,
+            description = "**⚠️ 已废弃**，请改用 `GET /aircraft/plane?modelCode=`：返回裸数组，已聚合本地 + 航新 + 633；" +
+                    "第三方行 `aircraftNumber` = 原 `airplaneNum`、`modelCode` = 原 `airplaneType`，" +
+                    "`airline`/`configVersion`/`status`/`createdAt` 固定为 `\"-\"`。\n\n" +
+                    "**（历史说明）** 查询航新、633 和本地三个数据源的单机信息，合并后返回统一的响应列表。\n\n" +
                     "**筛选规则**：不传参返回各源全部单机（本地无机号时也全量返回）；传 airplaneType 按机型过滤、传 airplaneNum 按机号过滤。\n\n" +
                     "**响应说明**：data 为各源直接拼接，不做跨源去重，同号飞机可能来自多个来源，以 source 字段区分；hangxin/sansan/local 分别记录各源的查询条数和状态。")
     @GetMapping("/aircraft/query")

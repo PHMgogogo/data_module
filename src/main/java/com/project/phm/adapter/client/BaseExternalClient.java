@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.CollectionType;
+import com.project.phm.adapter.dto.ExternalAircraftData;
 import com.project.phm.adapter.dto.ExternalModelData;
 import com.project.phm.adapter.dto.ExternalSortieData;
 import com.project.phm.service.PlatformConfigService;
@@ -27,6 +28,7 @@ public abstract class BaseExternalClient {
     private static final Logger log = LoggerFactory.getLogger(BaseExternalClient.class);
     protected static final String SORTIE_PATH = "/processing/data/noPage/list";
     protected static final String MODEL_PATH  = "/configuration/airplane/type/list";
+    protected static final String AIRCRAFT_PATH = "/configuration/airplane/number/list";
 
     protected final RestTemplate restTemplate;
     protected final ObjectMapper objectMapper;
@@ -98,6 +100,33 @@ public abstract class BaseExternalClient {
         }
         printRawResponse("GET", url, json);
         return parseModelResponse(json);
+    }
+
+    // ==================== 单机查询 ====================
+
+    public List<ExternalAircraftData> queryAircrafts(Map<String, Object> params) {
+        UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(buildUrl(AIRCRAFT_PATH));
+        if (params != null) {
+            // 缺省视为 null：仅在携带值时拼入 airplaneType/airplaneNum，避免向第三方传空串
+            Object airplaneType = params.get("airplaneType");
+            Object airplaneNum = params.get("airplaneNum");
+            if (airplaneType != null) {
+                urlBuilder.queryParam("airplaneType", airplaneType);
+            }
+            if (airplaneNum != null) {
+                urlBuilder.queryParam("airplaneNum", airplaneNum);
+            }
+        }
+        String url = urlBuilder.build().toUriString();
+        printRequest("GET", url, params);
+
+        String json = restTemplate.getForObject(url, String.class);
+        if (json == null || json.isEmpty()) {
+            log.warn("[{}] 外来平台单机接口返回空响应", getPlatformName());
+            return Collections.emptyList();
+        }
+        printRawResponse("GET", url, json);
+        return parseAircraftResponse(json);
     }
 
     // ==================== 通用 POST（原始 data） ====================
@@ -246,6 +275,28 @@ public abstract class BaseExternalClient {
             return Collections.emptyList();
         } catch (JsonProcessingException e) {
             log.error("[{}] 机型JSON解析失败: {}", getPlatformName(), e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
+    private List<ExternalAircraftData> parseAircraftResponse(String json) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            JsonNode dataNode = root.path("data");
+            if (dataNode.isMissingNode() || dataNode.isNull()) {
+                return Collections.emptyList();
+            }
+            CollectionType listType = objectMapper.getTypeFactory()
+                    .constructCollectionType(List.class, ExternalAircraftData.class);
+            if (dataNode.isArray()) {
+                return objectMapper.treeToValue(dataNode, listType);
+            } else if (dataNode.isObject()) {
+                ExternalAircraftData single = objectMapper.treeToValue(dataNode, ExternalAircraftData.class);
+                return Collections.singletonList(single);
+            }
+            return Collections.emptyList();
+        } catch (JsonProcessingException e) {
+            log.error("[{}] 单机JSON解析失败: {}", getPlatformName(), e.getMessage(), e);
             return Collections.emptyList();
         }
     }

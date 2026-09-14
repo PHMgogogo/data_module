@@ -571,6 +571,7 @@ public class CsvController {
             description = "从达梦 csv_xxx 表查询指定参数的时序数据，返回 timestamps+parameters 的统一格式。\n\n" +
                     "**自动推断时间戳列**：优先读取表元数据 timestamp_column，否则按常见列名匹配。\n" +
                     "**参数**：paralist 为参数名列表（不含时间戳列），tableName 为表名（含 csv_ 前缀）。")
+    @Tag(name = "05-CSV数据管理")
     @PostMapping("/query-timeseries")
     public ResponseEntity<ApiResult<UnifiedTimeSeriesResponse>> queryTimeSeries(
             @RequestBody UnifiedTimeSeriesRequest request) {

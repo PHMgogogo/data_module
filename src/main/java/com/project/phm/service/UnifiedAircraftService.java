@@ -75,7 +75,8 @@ public class UnifiedAircraftService {
                 String airplaneType = request.getAirplaneType();
                 if (aircraftNum == null || aircraftNum.isEmpty()) {
                     // 未指定机号：列出本地全部单机（可按机型过滤），行为与航新/633 一致
-                    return aircraftConfigService.listPlanes(airplaneType).stream()
+                    // 走纯本地查询，避免叠加 /aircraft/plane 里已做的三方聚合
+                    return aircraftConfigService.listLocalPlanes(airplaneType).stream()
                             .map(UnifiedAircraftResponse::fromLocal)
                             .filter(Objects::nonNull)
                             .collect(Collectors.toList());
