@@ -5,6 +5,7 @@ import com.project.phm.adapter.client.BaseExternalClient;
 import com.project.phm.adapter.client.HangxinSortieClient;
 import com.project.phm.adapter.client.SanSanSortieClient;
 import com.project.phm.adapter.dto.ExternalAircraftData;
+import com.project.phm.adapter.dto.ExternalConfigPage;
 import com.project.phm.adapter.dto.ExternalModelData;
 import com.project.phm.adapter.dto.ExternalSortieData;
 import com.project.phm.entity.*;
@@ -36,6 +37,8 @@ public class AircraftConfigService {
     /** 三方构型接口的分页参数：前端未暴露，固定默认值 */
     private static final int DEFAULT_CONFIG_PAGE = 1;
     private static final int DEFAULT_CONFIG_ROWS = 10;
+    /** 三方构型翻页取全的页数上限，防三方 total 异常导致无限翻页 */
+    private static final int MAX_CONFIG_PAGES = 100;
 
     /** 三方构型行的 itemType 固定值（GXMC 落在 equipmentName） */
     private static final String EXTERNAL_ITEM_TYPE = "EQUIPMENT";
@@ -48,6 +51,16 @@ public class AircraftConfigService {
     private final HangxinSortieClient hangxinClient;
     private final SanSanSortieClient sanSanClient;
     private final String configPath;
+
+    /**
+     * 三方构型内存索引：SSFJH → 该实体号下的全部三方构型行，整体替换、不逐条改。
+     *
+     * <p>存在的理由：三方构型接口不支持按机型过滤，而前端拿到的"机型"可能是三方实体号，
+     * 所以只能在内存里备一份全量，按 modelCode 命中后直接切片返回。</p>
+     *
+     * <p>只在"不传 modelCode"的查询里刷新；只在两个平台都没取到数据时保留旧值。</p>
+     */
+    private volatile Map<String, List<ConfigItem>> externalConfigIndex = Collections.emptyMap();
 
     public AircraftConfigService(AircraftModelMapper aircraftModelMapper,
                                   AircraftConfigMapper aircraftConfigMapper,
@@ -345,12 +358,13 @@ public class AircraftConfigService {
     /**
      * 查询构型项目列表：按 modelCode 走两个互斥的分支，一次调用只返回一个来源的数据，不做跨源拼接。
      *
-     * <p><b>传了 modelCode</b>：只查本地 config_item 表的该机型（三方接口不支持按机型过滤，
-     * 不透传），按 GJB 章节 + itemId 升序，异常不吞、直接向上抛出由控制器返回 500。</p>
+     * <p><b>传了 modelCode</b>：先与内存里的三方 SSFJH 索引比对 —— 命中即认定这是三方实体号，
+     * 直接返回该实体号下的全部三方构型行；<b>未命中的才当作本地机型代码</b>查 config_item 表
+     * （按 GJB 章节 + itemId 升序，异常不吞、由控制器返回 500）。</p>
      *
-     * <p><b>不传 modelCode</b>：只查三方构型，依次拼接航新、633，跨源不去重，本地行不参与。
-     * 三方分页固定 {@code page=1, rows=10}（前端不暴露）。任一平台未配置或不可达时仅跳过该源
-     * 并记日志，两个平台都拿不到数据时返回空列表。</p>
+     * <p><b>不传 modelCode</b>：全量重拉三方构型（各平台翻页取全），依次拼接航新、633，
+     * 跨源不去重，本地行不参与；随后用这批数据<b>整体替换</b> SSFJH 索引，并原样返回。
+     * 任一平台未配置或不可达时仅跳过该源并记日志，两个平台都拿不到数据时返回空列表。</p>
      *
      * <p>三方行的字段映射：{@code GXBS → itemId}、{@code SJGXBS → parentItemId}、
      * {@code GXMC → equipmentName}、{@code SSFJH → modelCode}、{@code JJH → partNumber}，
@@ -359,32 +373,22 @@ public class AircraftConfigService {
      * 这些实例仅用于响应，不参与任何持久化。</p>
      */
     public List<ConfigItem> listItems(String modelCode) {
-        // 传了机型：只查本地
+        // 传了机型：先按三方实体号（SSFJH）匹配内存索引，命中就返回该实体号下的全部三方构型
         if (modelCode != null && !modelCode.isEmpty()) {
+            List<ConfigItem> externalHit = externalConfigIndex.get(modelCode.trim());
+            if (externalHit != null) {
+                log.info("/aircraft/config-items 命中三方 SSFJH 索引: modelCode={}, 构型数={}",
+                        modelCode, externalHit.size());
+                return externalHit;
+            }
+            // 未命中：当作本地机型代码查 config_item
             return listLocalItems(modelCode);
         }
 
-        // 不传机型：只查三方
-        // 分页参数由后端给定：BaseExternalClient.queryConfigItems 会跳过 null 值
-        Map<String, Object> params = new LinkedHashMap<>();
-        params.put("page", DEFAULT_CONFIG_PAGE);
-        params.put("rows", DEFAULT_CONFIG_ROWS);
-
-        CompletableFuture<List<ConfigItem>> hangxinFuture = CompletableFuture.supplyAsync(
-                () -> queryConfigItemsSafe(hangxinClient, LABEL_HANGXIN, params));
-        CompletableFuture<List<ConfigItem>> sanSanFuture = CompletableFuture.supplyAsync(
-                () -> queryConfigItemsSafe(sanSanClient, LABEL_SANSAN, params));
-
-        List<ConfigItem> hangxinItems = joinConfigSafe(hangxinFuture, LABEL_HANGXIN);
-        List<ConfigItem> sanSanItems = joinConfigSafe(sanSanFuture, LABEL_SANSAN);
-
-        List<ConfigItem> merged = new ArrayList<>(hangxinItems.size() + sanSanItems.size());
-        merged.addAll(hangxinItems);
-        merged.addAll(sanSanItems);
-
-        log.info("/aircraft/config-items 三方查询完成: 航新={}, 633={}, 合计={}",
-                hangxinItems.size(), sanSanItems.size(), merged.size());
-        return merged;
+        // 不传机型：全量重拉三方 → 整体替换索引 → 返回这批全量行
+        List<ConfigItem> all = queryAllExternalConfigItems();
+        refreshExternalConfigIndex(all);
+        return all;
     }
 
     /**
@@ -411,15 +415,106 @@ public class AircraftConfigService {
 
     // ==================== 外源构型查询（带异常隔离） ====================
 
-    /** 单平台查询：未配置 / 不可达 / 超时 / HTTP 4xx-5xx / 解析异常均在此吞掉 */
-    private List<ConfigItem> queryConfigItemsSafe(BaseExternalClient client, String label,
-                                                   Map<String, Object> params) {
-        try {
-            return toConfigItems(client.queryConfigItems(configPath, params));
-        } catch (Exception e) {
-            log.warn("{}构型查询失败，已跳过该数据源: {}", label, e.getMessage());
-            return Collections.emptyList();
+    /**
+     * 并发拉取两个平台的三方构型全量，按 航新 → 633 顺序拼接，跨源不去重。
+     */
+    private List<ConfigItem> queryAllExternalConfigItems() {
+        CompletableFuture<List<ConfigItem>> hangxinFuture = CompletableFuture.supplyAsync(
+                () -> queryAllConfigItemsSafe(hangxinClient, LABEL_HANGXIN));
+        CompletableFuture<List<ConfigItem>> sanSanFuture = CompletableFuture.supplyAsync(
+                () -> queryAllConfigItemsSafe(sanSanClient, LABEL_SANSAN));
+
+        List<ConfigItem> hangxinItems = joinConfigSafe(hangxinFuture, LABEL_HANGXIN);
+        List<ConfigItem> sanSanItems = joinConfigSafe(sanSanFuture, LABEL_SANSAN);
+
+        List<ConfigItem> merged = new ArrayList<>(hangxinItems.size() + sanSanItems.size());
+        merged.addAll(hangxinItems);
+        merged.addAll(sanSanItems);
+
+        log.info("/aircraft/config-items 三方全量查询完成: 航新={}, 633={}, 合计={}",
+                hangxinItems.size(), sanSanItems.size(), merged.size());
+        return merged;
+    }
+
+    /**
+     * 单平台翻页取全：每页 {@code rows = DEFAULT_CONFIG_ROWS}，收齐 total / 空页 / 不满一页 /
+     * 撞上 {@link #MAX_CONFIG_PAGES} 即停。
+     *
+     * <p>未配置 / 不可达 / 超时 / HTTP 4xx-5xx / 解析异常均在此吞掉，并保留该平台前面已取到的页，
+     * 不因某页失败丢掉整源数据。</p>
+     */
+    private List<ConfigItem> queryAllConfigItemsSafe(BaseExternalClient client, String label) {
+        List<ConfigItem> collected = new ArrayList<>();
+        List<Map<String, Object>> previousRows = null;
+
+        for (int page = DEFAULT_CONFIG_PAGE; page < DEFAULT_CONFIG_PAGE + MAX_CONFIG_PAGES; page++) {
+            // 分页参数由后端给定：BaseExternalClient.queryConfigItems 会跳过 null 值
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("page", page);
+            params.put("rows", DEFAULT_CONFIG_ROWS);
+
+            ExternalConfigPage result;
+            try {
+                result = client.queryConfigItems(configPath, params);
+            } catch (Exception e) {
+                log.warn("{}构型查询失败（page={}），已跳过该数据源: {}", label, page, e.getMessage());
+                break;
+            }
+
+            List<Map<String, Object>> rows = result.getRows();
+            if (rows.isEmpty()) {
+                break;
+            }
+            // 三方若忽略 page 参数会反复返回同一页，靠"与上一页完全相同"兜底退出，避免重复收行
+            if (rows.equals(previousRows)) {
+                log.warn("{}构型接口 page={} 返回与上一页完全相同的数据，判定其不翻页，提前结束", label, page);
+                break;
+            }
+
+            collected.addAll(toConfigItems(rows));
+            // 已收齐 total，或拿到不满一页的尾页
+            if (result.getTotal() > 0 && collected.size() >= result.getTotal()) {
+                break;
+            }
+            if (rows.size() < DEFAULT_CONFIG_ROWS) {
+                break;
+            }
+            previousRows = rows;
         }
+        return collected;
+    }
+
+    /**
+     * 用最新一次三方全量重建 SSFJH 索引（键即三方行映射后的 {@code modelCode}，做 trim；
+     * 没有 SSFJH 的行不建索引，因为 modelCode 永远匹配不到它）。
+     *
+     * <p>两个平台都没取到数据时<b>不刷新</b>，保留旧索引 —— 避免三方抽风把索引清空，
+     * 导致后续所有按 modelCode 的查询全部回落到本地。</p>
+     */
+    private void refreshExternalConfigIndex(List<ConfigItem> all) {
+        if (all == null || all.isEmpty()) {
+            log.warn("三方构型本次未取到任何数据，保留旧 SSFJH 索引（共 {} 个实体号）",
+                    externalConfigIndex.size());
+            return;
+        }
+
+        Map<String, List<ConfigItem>> index = new LinkedHashMap<>();
+        for (ConfigItem item : all) {
+            String key = item.getModelCode();
+            if (key == null || key.trim().isEmpty()) {
+                continue;
+            }
+            index.computeIfAbsent(key.trim(), k -> new ArrayList<>()).add(item);
+        }
+
+        // 先在局部变量里拼好再整体替换：读侧只会看到一份完整、不可变的索引
+        Map<String, List<ConfigItem>> replacement = new HashMap<>(index.size() * 2);
+        for (Map.Entry<String, List<ConfigItem>> entry : index.entrySet()) {
+            replacement.put(entry.getKey(), Collections.unmodifiableList(entry.getValue()));
+        }
+        externalConfigIndex = Collections.unmodifiableMap(replacement);
+
+        log.info("三方 SSFJH 索引已刷新: {} 个实体号, {} 条构型", replacement.size(), all.size());
     }
 
     /**

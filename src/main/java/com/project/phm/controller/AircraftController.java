@@ -182,17 +182,21 @@ public class AircraftController {
     @Operation(summary = "获取构型项目列表",
             description = "按 modelCode 走两个互斥分支，**一次调用只返回一个来源的数据**，不做跨源拼接。\n\n" +
                     "构型项目按GJB章节组织：SYSTEM（系统）→ SUBSYSTEM（子系统）→ EQUIPMENT/LRU（设备）\n\n" +
-                    "**传 modelCode**：只查本地该机型的构型项目。\n\n" +
-                    "**不传 modelCode**：只查三方构型，依次拼接航新、633（三方接口不支持按机型过滤，" +
-                    "分页固定 page=1、rows=10，由后端给定），本地行不参与。\n\n" +
+                    "**传 modelCode**：先与内存里的三方 SSFJH 索引比对，**命中即认定它是三方实体号**，" +
+                    "返回该实体号下的全部三方构型行；**未命中的才当作本地机型代码**查本地 config_item。\n\n" +
+                    "**不传 modelCode**：全量重拉三方构型（各平台翻页取全，每页 rows=10，由后端给定；" +
+                    "三方接口不支持按机型过滤），依次拼接航新、633，本地行不参与；" +
+                    "这批数据同时被用于**整体替换**内存索引，并由本接口原样返回。\n\n" +
                     "**三方行映射**：GXBS→itemId、SJGXBS→parentItemId、GXMC→equipmentName、SSFJH→modelCode、" +
                     "JJH→partNumber，itemType 固定为 EQUIPMENT；AZWZ 及三方其余字段忽略。" +
                     "三方 id 为非数字串（如 gx-jx20a-01）时 itemId/parentItemId 为 null。\n\n" +
                     "**说明**：响应无 source 字段，两条分支靠 id 形态区分（本地 itemId 非空、三方为 null）；" +
-                    "不传 modelCode 时任一平台未配置或不可达仅跳过该源，两个平台都拿不到数据时返回空列表。")
+                    "索引只在「不传 modelCode」时刷新，应用刚启动、还没查过全量就直接传 modelCode 会因索引为空而回落本地；" +
+                    "三方全量本次一条都没取到时保留旧索引；任一平台未配置或不可达仅跳过该源，" +
+                    "两个平台都拿不到数据时返回空列表。")
     @Tag(name = "03-构型项目管理")
     @GetMapping("/config-items")
-    public ResponseEntity<?> listConfigItems(@Parameter(description = "机型代码；传则只查本地该机型，不传则只查三方构型", example = "B737-800")
+    public ResponseEntity<?> listConfigItems(@Parameter(description = "机型代码或三方实体号（SSFJH）：命中三方索引则返回该实体号下的三方构型，否则查本地该机型", example = "B737-800")
                                               @RequestParam(value = "modelCode", required = false) String modelCode) {
         try {
             return ResponseEntity.ok(configService.listItems(modelCode));

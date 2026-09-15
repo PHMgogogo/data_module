@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.CollectionType;
 import com.project.phm.adapter.dto.ExternalAircraftData;
+import com.project.phm.adapter.dto.ExternalConfigPage;
 import com.project.phm.adapter.dto.ExternalModelData;
 import com.project.phm.adapter.dto.ExternalSortieData;
 import com.project.phm.service.PlatformConfigService;
@@ -134,14 +135,14 @@ public abstract class BaseExternalClient {
     // ==================== 构型查询 ====================
 
     /**
-     * 构型查询：返回 {@code data.rows} 的原始 Map 列表。
+     * 构型查询：返回单页的 {@code data.total} + {@code data.rows} 原始行。
      *
-     * <p>三方返回的字段名大小写不统一（GXBS / gxbs / SJgxbs …），故不绑定 DTO，
-     * 交由调用方按忽略大小写的规则取值。</p>
+     * <p>需要 {@code total} 是因为三方 rows 有上限（现用 10），只取第一页会漏数据，
+     * 调用方要据此翻页取全。</p>
      *
      * @param configPath 构型接口路径，取自 {@code support-system.paths.getDzgxxx}
      */
-    public List<Map<String, Object>> queryConfigItems(String configPath, Map<String, Object> params) {
+    public ExternalConfigPage queryConfigItems(String configPath, Map<String, Object> params) {
         UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(buildUrl(configPath));
         if (params != null) {
             // 缺省视为 null：仅在携带值时拼入，避免向第三方传空串
@@ -157,34 +158,36 @@ public abstract class BaseExternalClient {
         String json = restTemplate.getForObject(url, String.class);
         if (json == null || json.isEmpty()) {
             log.warn("[{}] 外来平台构型接口返回空响应", getPlatformName());
-            return Collections.emptyList();
+            return ExternalConfigPage.empty();
         }
         printRawResponse("GET", url, json);
-        return parseConfigRows(json);
+        return parseConfigPage(json);
     }
 
-    /** 解析构型接口返回的 JSON，取出 data.rows 的原始行 */
-    private List<Map<String, Object>> parseConfigRows(String json) {
+    /** 解析构型接口返回的 JSON，取出 data.total 与 data.rows 的原始行 */
+    private ExternalConfigPage parseConfigPage(String json) {
         try {
             JsonNode root = objectMapper.readTree(json);
             int code = root.path("code").asInt(0);
             if (code != 200) {
                 log.warn("[{}] 外来平台构型接口返回异常状态码: code={}, message={}",
                         getPlatformName(), code, root.path("message").asText());
-                return Collections.emptyList();
+                return ExternalConfigPage.empty();
             }
-            JsonNode rowsNode = root.path("data").path("rows");
+            JsonNode dataNode = root.path("data");
+            int total = dataNode.path("total").asInt(0);
+            JsonNode rowsNode = dataNode.path("rows");
             if (!rowsNode.isArray()) {
-                return Collections.emptyList();
+                return ExternalConfigPage.empty();
             }
             List<Map<String, Object>> rows = new ArrayList<>(rowsNode.size());
             for (JsonNode row : rowsNode) {
                 rows.add(objectMapper.convertValue(row, new TypeReference<Map<String, Object>>() {}));
             }
-            return rows;
+            return new ExternalConfigPage(total, rows);
         } catch (Exception e) {
             log.error("[{}] 构型JSON解析失败: {}", getPlatformName(), e.getMessage(), e);
-            return Collections.emptyList();
+            return ExternalConfigPage.empty();
         }
     }
 
