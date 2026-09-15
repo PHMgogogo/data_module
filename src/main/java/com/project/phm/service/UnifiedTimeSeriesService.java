@@ -21,7 +21,9 @@ import java.time.LocalDateTime;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
+import java.time.temporal.ChronoField;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 
@@ -32,7 +34,8 @@ import java.util.concurrent.CompletableFuture;
  * <ul>
  *   <li>本地：按 {@code sortieId} 从 config_data_mapping 查出该架次关联的 csv_xxx 表</li>
  *   <li>航新 / 633：按机号 + 架次号先查三方架次接口拿到 startTime / endTime
- *       （转成 {@code 2026-07-23T10:30:00.000Z} 形式），再查三方时序接口</li>
+ *       （转成 {@code 2026-07-23T10:30:00.000Z} 形式），再查三方时序接口。
+ *       请求体里传了 {@code startTime} / {@code endTime} 时以传入值为准，不再用架次接口的值</li>
  * </ul>
  *
  * <p>按机号 / 架次过滤后，实际只有归属平台会返回数据，因此新接口
@@ -51,8 +54,11 @@ public class UnifiedTimeSeriesService {
 
     /** 三方架次接口返回的无时区时间格式（按原样加 Z 后缀，不做时区换算） */
     private static final DateTimeFormatter[] LOCAL_TIME_IN = {
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"),
-            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS"),
+            // 空格分隔、秒后小数位数不定：2026-01-01 10:00:00 / 10:00:00.00 / 10:00:00.123456789
+            new DateTimeFormatterBuilder()
+                    .appendPattern("yyyy-MM-dd HH:mm:ss")
+                    .appendFraction(ChronoField.NANO_OF_SECOND, 0, 9, true)
+                    .toFormatter(),
             DateTimeFormatter.ISO_LOCAL_DATE_TIME
     };
 
@@ -164,8 +170,8 @@ public class UnifiedTimeSeriesService {
 
             Map<String, Object> params = new HashMap<>();
             putIfNotNull(params, "sortieId", sortie.getId());
-            putIfNotNull(params, "startTimestamp", toIsoUtc(sortie.getStartTime()));
-            putIfNotNull(params, "endTimestamp", toIsoUtc(sortie.getEndTime()));
+            putIfNotNull(params, "startTimestamp", resolveTime(request.getStartTime(), sortie.getStartTime()));
+            putIfNotNull(params, "endTimestamp", resolveTime(request.getEndTime(), sortie.getEndTime()));
             params.put("samplingRate", request.samplingRateOrDefault());
             if (request.getParalist() != null && !request.getParalist().isEmpty()) {
                 params.put("parameters", request.getParalist());
@@ -197,10 +203,12 @@ public class UnifiedTimeSeriesService {
             if (request.getParalist() != null && !request.getParalist().isEmpty()) {
                 params.put("Paralist", request.getParalist());
             }
-            if (sortie != null) {
-                putIfNotNull(params, "startTime", toIsoUtc(sortie.getStartTime()));
-                putIfNotNull(params, "endTime", toIsoUtc(sortie.getEndTime()));
-            }
+            String startTime = resolveTime(request.getStartTime(),
+                    sortie == null ? null : sortie.getStartTime());
+            String endTime = resolveTime(request.getEndTime(),
+                    sortie == null ? null : sortie.getEndTime());
+            putIfNotNull(params, "startTime", startTime);
+            putIfNotNull(params, "endTime", endTime);
 
             String json = sanSanClient.postForRawJson(TS_PATH, params);
             return json == null ? null : UnifiedTimeSeriesResponse.fromSanSanJson(json, objectMapper);
@@ -232,6 +240,18 @@ public class UnifiedTimeSeriesService {
             }
         }
         return null;
+    }
+
+    /**
+     * 取生效时间：调用方传了就用调用方传的，否则用三方架次接口返回的，两者都统一转成 ISO。
+     *
+     * <p>调用方传的格式比三方宽松（空格或 ISO 分隔都行），转换失败时原样透传并告警。</p>
+     */
+    static String resolveTime(String fromRequest, String fromSortie) {
+        if (fromRequest != null && !fromRequest.trim().isEmpty()) {
+            return toIsoUtc(fromRequest);
+        }
+        return toIsoUtc(fromSortie);
     }
 
     /**

@@ -11,6 +11,7 @@ import com.project.phm.entity.*;
 import com.project.phm.mapper.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -32,6 +33,13 @@ public class AircraftConfigService {
     private static final String LABEL_HANGXIN = "航新";
     private static final String LABEL_SANSAN = "633";
 
+    /** 三方构型接口的分页参数：前端未暴露，固定默认值 */
+    private static final int DEFAULT_CONFIG_PAGE = 1;
+    private static final int DEFAULT_CONFIG_ROWS = 10;
+
+    /** 三方构型行的 itemType 固定值（GXMC 落在 equipmentName） */
+    private static final String EXTERNAL_ITEM_TYPE = "EQUIPMENT";
+
     private final AircraftModelMapper aircraftModelMapper;
     private final AircraftConfigMapper aircraftConfigMapper;
     private final ConfigItemMapper configItemMapper;
@@ -39,6 +47,7 @@ public class AircraftConfigService {
     private final SortieMapper sortieMapper;
     private final HangxinSortieClient hangxinClient;
     private final SanSanSortieClient sanSanClient;
+    private final String configPath;
 
     public AircraftConfigService(AircraftModelMapper aircraftModelMapper,
                                   AircraftConfigMapper aircraftConfigMapper,
@@ -46,7 +55,8 @@ public class AircraftConfigService {
                                   ConfigDataMappingMapper configDataMappingMapper,
                                   SortieMapper sortieMapper,
                                   HangxinSortieClient hangxinClient,
-                                  SanSanSortieClient sanSanClient) {
+                                  SanSanSortieClient sanSanClient,
+                                  @Value("${support-system.paths.getDzgxxx}") String configPath) {
         this.aircraftModelMapper = aircraftModelMapper;
         this.aircraftConfigMapper = aircraftConfigMapper;
         this.configItemMapper = configItemMapper;
@@ -54,6 +64,7 @@ public class AircraftConfigService {
         this.sortieMapper = sortieMapper;
         this.hangxinClient = hangxinClient;
         this.sanSanClient = sanSanClient;
+        this.configPath = configPath;
     }
 
     // ==================== 机型管理 ====================
@@ -331,11 +342,62 @@ public class AircraftConfigService {
 
     // ==================== 构型项目管理 ====================
 
+    /**
+     * 查询构型项目列表：按 modelCode 走两个互斥的分支，一次调用只返回一个来源的数据，不做跨源拼接。
+     *
+     * <p><b>传了 modelCode</b>：只查本地 config_item 表的该机型（三方接口不支持按机型过滤，
+     * 不透传），按 GJB 章节 + itemId 升序，异常不吞、直接向上抛出由控制器返回 500。</p>
+     *
+     * <p><b>不传 modelCode</b>：只查三方构型，依次拼接航新、633，跨源不去重，本地行不参与。
+     * 三方分页固定 {@code page=1, rows=10}（前端不暴露）。任一平台未配置或不可达时仅跳过该源
+     * 并记日志，两个平台都拿不到数据时返回空列表。</p>
+     *
+     * <p>三方行的字段映射：{@code GXBS → itemId}、{@code SJGXBS → parentItemId}、
+     * {@code GXMC → equipmentName}、{@code SSFJH → modelCode}、{@code JJH → partNumber}，
+     * {@code itemType} 固定为 {@code EQUIPMENT}；{@code AZWZ} 及三方其余字段一律忽略。
+     * 三方 id 为非数字串（如 {@code gx-jx20a-01}）时解析失败置 null，不整条丢弃。
+     * 这些实例仅用于响应，不参与任何持久化。</p>
+     */
     public List<ConfigItem> listItems(String modelCode) {
-        return configItemMapper.selectList(
-                Wrappers.<ConfigItem>lambdaQuery()
-                        .eq(ConfigItem::getModelCode, modelCode)
-                        .orderByAsc(ConfigItem::getAtaChapter, ConfigItem::getItemId));
+        // 传了机型：只查本地
+        if (modelCode != null && !modelCode.isEmpty()) {
+            return listLocalItems(modelCode);
+        }
+
+        // 不传机型：只查三方
+        // 分页参数由后端给定：BaseExternalClient.queryConfigItems 会跳过 null 值
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("page", DEFAULT_CONFIG_PAGE);
+        params.put("rows", DEFAULT_CONFIG_ROWS);
+
+        CompletableFuture<List<ConfigItem>> hangxinFuture = CompletableFuture.supplyAsync(
+                () -> queryConfigItemsSafe(hangxinClient, LABEL_HANGXIN, params));
+        CompletableFuture<List<ConfigItem>> sanSanFuture = CompletableFuture.supplyAsync(
+                () -> queryConfigItemsSafe(sanSanClient, LABEL_SANSAN, params));
+
+        List<ConfigItem> hangxinItems = joinConfigSafe(hangxinFuture, LABEL_HANGXIN);
+        List<ConfigItem> sanSanItems = joinConfigSafe(sanSanFuture, LABEL_SANSAN);
+
+        List<ConfigItem> merged = new ArrayList<>(hangxinItems.size() + sanSanItems.size());
+        merged.addAll(hangxinItems);
+        merged.addAll(sanSanItems);
+
+        log.info("/aircraft/config-items 三方查询完成: 航新={}, 633={}, 合计={}",
+                hangxinItems.size(), sanSanItems.size(), merged.size());
+        return merged;
+    }
+
+    /**
+     * 仅查本地 config_item 表，按 GJB 章节 + itemId 升序；modelCode 非空时按机型过滤。
+     */
+    public List<ConfigItem> listLocalItems(String modelCode) {
+        if (modelCode != null && !modelCode.isEmpty()) {
+            return configItemMapper.selectList(
+                    Wrappers.<ConfigItem>lambdaQuery()
+                            .eq(ConfigItem::getModelCode, modelCode)
+                            .orderByAsc(ConfigItem::getAtaChapter, ConfigItem::getItemId));
+        }
+        return listAllItems();
     }
 
     /**
@@ -345,6 +407,82 @@ public class AircraftConfigService {
         return configItemMapper.selectList(
                 Wrappers.<ConfigItem>lambdaQuery()
                         .orderByAsc(ConfigItem::getAtaChapter, ConfigItem::getItemId));
+    }
+
+    // ==================== 外源构型查询（带异常隔离） ====================
+
+    /** 单平台查询：未配置 / 不可达 / 超时 / HTTP 4xx-5xx / 解析异常均在此吞掉 */
+    private List<ConfigItem> queryConfigItemsSafe(BaseExternalClient client, String label,
+                                                   Map<String, Object> params) {
+        try {
+            return toConfigItems(client.queryConfigItems(configPath, params));
+        } catch (Exception e) {
+            log.warn("{}构型查询失败，已跳过该数据源: {}", label, e.getMessage());
+            return Collections.emptyList();
+        }
+    }
+
+    /**
+     * 三方行转为响应载体，按约定的字段映射逐个赋值；其余字段一律忽略。
+     *
+     * <p>三方字段名大小写不统一（GXBS / gxbs / SJgxbs …），取值时忽略大小写。</p>
+     */
+    private List<ConfigItem> toConfigItems(List<Map<String, Object>> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        List<ConfigItem> items = new ArrayList<>(rows.size());
+        for (Map<String, Object> row : rows) {
+            if (row == null) {
+                continue;
+            }
+            ConfigItem item = new ConfigItem();
+            item.setItemId(parseNullableLong(pick(row, "GXBS")));
+            item.setParentItemId(parseNullableLong(pick(row, "SJGXBS")));
+            item.setEquipmentName(pick(row, "GXMC"));
+            item.setModelCode(pick(row, "SSFJH"));
+            item.setPartNumber(pick(row, "JJH"));
+            item.setItemType(EXTERNAL_ITEM_TYPE);
+            items.add(item);
+        }
+        return items;
+    }
+
+    /** 按目标字段名取值（忽略大小写），仅取首个非空值；无匹配返回 null */
+    private static String pick(Map<String, Object> row, String key) {
+        Object exact = row.get(key);
+        if (exact != null) {
+            return exact.toString();
+        }
+        for (Map.Entry<String, Object> e : row.entrySet()) {
+            if (e.getKey() != null && e.getKey().equalsIgnoreCase(key) && e.getValue() != null) {
+                return e.getValue().toString();
+            }
+        }
+        return null;
+    }
+
+    /** 三方 id 转 Long：纯数字才接受，非数字/空返回 null（不整条丢弃） */
+    private static Long parseNullableLong(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.valueOf(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    /** 兜底 join：正常情况下 future 内的 try/catch 已保证不抛异常 */
+    private List<ConfigItem> joinConfigSafe(CompletableFuture<List<ConfigItem>> future, String label) {
+        try {
+            List<ConfigItem> list = future.join();
+            return list == null ? Collections.<ConfigItem>emptyList() : list;
+        } catch (Exception e) {
+            log.warn("{}构型聚合任务异常，已跳过该数据源: {}", label, e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     public ConfigItem getItem(Long itemId) {
@@ -515,8 +653,10 @@ public class AircraftConfigService {
      * 查询架次列表：本地 sortie 行在前，随后依次拼接航新、633 平台的架次，跨源不去重。
      *
      * <p>第三方行的 {@code sortieId} 取原 {@code id}、{@code aircraftNumber} 取原
-     * {@code airplaneNum}、{@code sortieNumber} 取原 {@code flightNum}；flightDate /
-     * startTime / endTime 固定为 {@code "-"}。这些实例仅用于响应，不参与任何持久化。</p>
+     * {@code airplaneNum}、{@code sortieNumber} 取原 {@code flightNum}；{@code flightDate} /
+     * {@code startTime} / {@code endTime} 由三方 {@code startTime} / {@code endTime}
+     * （形如 {@code 2026-01-01 10:00:00.00}）拆分而来，字段形态与本地行一致
+     * （flightDate 只放日期、startTime/endTime 只放时刻）。这些实例仅用于响应，不参与任何持久化。</p>
      *
      * <p>三方请求参数：aircraftNumber 非空时透传为 {@code airplaneNum} 做过滤，其余参数不带。</p>
      *
@@ -581,8 +721,10 @@ public class AircraftConfigService {
     }
 
     /**
-     * 第三方行转为响应载体：sortieId = id，aircraftNumber = airplaneNum，
-     * sortieNumber = flightNum，其余为占位符。
+     * 第三方行转为响应载体：sortieId = id，aircraftNumber = airplaneNum，sortieNumber = flightNum；
+     * flightDate / startTime / endTime 由三方 {@code startTime} / {@code endTime}
+     * （形如 {@code 2026-01-01 10:00:00.00}）拆出，与本地行的字段形态保持一致：
+     * flightDate 取日期部分、startTime / endTime 只取时刻部分。三方的 flightDate 非空时优先用它。
      */
     private List<Sortie> toSorties(List<ExternalSortieData> raw) {
         if (raw == null || raw.isEmpty()) {
@@ -597,12 +739,81 @@ public class AircraftConfigService {
             sortie.setSortieId(parseSortieId(ext.getId()));
             sortie.setAircraftNumber(ext.getAirplaneNum());
             sortie.setSortieNumber(ext.getFlightNum());
-            sortie.setFlightDate(PLACEHOLDER);
-            sortie.setStartTime(PLACEHOLDER);
-            sortie.setEndTime(PLACEHOLDER);
+            sortie.setFlightDate(placeholderIfAbsent(firstNonEmpty(ext.getFlightDate(),
+                    datePart(ext.getStartTime()))));
+            sortie.setStartTime(placeholderIfAbsent(timePart(ext.getStartTime())));
+            sortie.setEndTime(placeholderIfAbsent(timePart(ext.getEndTime())));
             sorties.add(sortie);
         }
         return sorties;
+    }
+
+    /**
+     * 取三方时间的日期部分："2026-01-01 10:00:00.00" / "2026-01-01T10:00:00" → "2026-01-01"。
+     *
+     * <p>只有时刻（"10:00:00"）时返回 null。</p>
+     */
+    static String datePart(String dateTime) {
+        String value = normalizeTime(dateTime);
+        if (value == null) {
+            return null;
+        }
+        int sep = dateTimeSeparator(value);
+        if (sep < 0) {
+            return value.indexOf(':') < 0 ? value : null;
+        }
+        return sep == 0 ? null : value.substring(0, sep);
+    }
+
+    /**
+     * 取三方时间的时刻部分："2026-01-01 10:00:00.00" → "10:00:00"（丢弃小数秒）。
+     *
+     * <p>只有日期时返回 null。</p>
+     */
+    static String timePart(String dateTime) {
+        String value = normalizeTime(dateTime);
+        if (value == null) {
+            return null;
+        }
+        int sep = dateTimeSeparator(value);
+        String clock = sep < 0 ? value : value.substring(sep + 1);
+        if (clock.indexOf(':') < 0) {
+            return null;
+        }
+        int dot = clock.indexOf('.');
+        return dot > 0 ? clock.substring(0, dot) : clock;
+    }
+
+    /** 去空白与末尾的 UTC 后缀（Z），空值归 null */
+    private static String normalizeTime(String dateTime) {
+        if (dateTime == null) {
+            return null;
+        }
+        String value = dateTime.trim();
+        if (value.endsWith("Z") || value.endsWith("z")) {
+            value = value.substring(0, value.length() - 1).trim();
+        }
+        return value.isEmpty() ? null : value;
+    }
+
+    /** 日期与时刻的分隔符位置（空格或 ISO 的 T），没有则返回 -1 */
+    private static int dateTimeSeparator(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c == ' ' || c == 'T' || c == 't') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        return first != null && !first.isEmpty() ? first : second;
+    }
+
+    /** 三方该字段缺失时的占位符：本地行是真实值，三方缺则沿用 "-" 占位，前端无需判空 */
+    private static String placeholderIfAbsent(String value) {
+        return value == null || value.isEmpty() ? PLACEHOLDER : value;
     }
 
     /** 三方架次ID（字符串）转本地自增主键；非数字时置 null，避免整条记录丢失 */

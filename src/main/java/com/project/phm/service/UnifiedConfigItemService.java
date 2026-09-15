@@ -85,10 +85,9 @@ public class UnifiedConfigItemService {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String modelCode = request.getModelCode();
+                // 只取本地行：聚合职责已下放到 listItems，这里若调它会再打一遍三方
                 // 未指定机型：默认列出本地全部机型的构型项目，行为与航新/633 一致
-                List<ConfigItem> items = (modelCode == null || modelCode.isEmpty())
-                        ? aircraftConfigService.listAllItems()
-                        : aircraftConfigService.listItems(modelCode);
+                List<ConfigItem> items = aircraftConfigService.listLocalItems(modelCode);
                 return items.stream()
                         .map(UnifiedConfigResponse::fromLocal)
                         .filter(Objects::nonNull)

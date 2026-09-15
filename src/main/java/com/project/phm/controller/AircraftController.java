@@ -180,12 +180,20 @@ public class AircraftController {
     // ==================== 构型项目管理 ====================
 
     @Operation(summary = "获取构型项目列表",
-            description = "获取指定机型下的所有构型项目（扁平列表）。\n\n" +
-                    "构型项目按GJB章节组织：SYSTEM（系统）→ SUBSYSTEM（子系统）→ EQUIPMENT/LRU（设备）")
+            description = "按 modelCode 走两个互斥分支，**一次调用只返回一个来源的数据**，不做跨源拼接。\n\n" +
+                    "构型项目按GJB章节组织：SYSTEM（系统）→ SUBSYSTEM（子系统）→ EQUIPMENT/LRU（设备）\n\n" +
+                    "**传 modelCode**：只查本地该机型的构型项目。\n\n" +
+                    "**不传 modelCode**：只查三方构型，依次拼接航新、633（三方接口不支持按机型过滤，" +
+                    "分页固定 page=1、rows=10，由后端给定），本地行不参与。\n\n" +
+                    "**三方行映射**：GXBS→itemId、SJGXBS→parentItemId、GXMC→equipmentName、SSFJH→modelCode、" +
+                    "JJH→partNumber，itemType 固定为 EQUIPMENT；AZWZ 及三方其余字段忽略。" +
+                    "三方 id 为非数字串（如 gx-jx20a-01）时 itemId/parentItemId 为 null。\n\n" +
+                    "**说明**：响应无 source 字段，两条分支靠 id 形态区分（本地 itemId 非空、三方为 null）；" +
+                    "不传 modelCode 时任一平台未配置或不可达仅跳过该源，两个平台都拿不到数据时返回空列表。")
     @Tag(name = "03-构型项目管理")
     @GetMapping("/config-items")
-    public ResponseEntity<?> listConfigItems(@Parameter(description = "机型代码", required = true, example = "B737-800")
-                                              @RequestParam("modelCode") String modelCode) {
+    public ResponseEntity<?> listConfigItems(@Parameter(description = "机型代码；传则只查本地该机型，不传则只查三方构型", example = "B737-800")
+                                              @RequestParam(value = "modelCode", required = false) String modelCode) {
         try {
             return ResponseEntity.ok(configService.listItems(modelCode));
         } catch (Exception e) {
@@ -312,7 +320,12 @@ public class AircraftController {
     // ==================== 架次管理 ====================
 
     @Operation(summary = "获取架次列表",
-            description = "返回架次列表：先取本地 sortie 表，再依次拼接航新、633 平台的架次。")
+            description = "返回架次列表：先取本地 sortie 表，再依次拼接航新、633 平台的架次（跨源不去重）。\n\n" +
+                    "**第三方行字段映射**：`sortieId` = 原 `id`、`aircraftNumber` = 原 `airplaneNum`、" +
+                    "`sortieNumber` = 原 `flightNum`；`flightDate` / `startTime` / `endTime` 由三方 " +
+                    "`startTime` / `endTime`（形如 `2026-01-01 10:00:00.00`）拆分而来 —— " +
+                    "`flightDate` 取日期部分（`2026-01-01`）、`startTime` / `endTime` 只取时刻部分（`10:00:00`），" +
+                    "与本地行形态一致（本地存的就是日期与时刻分开）。三方未返回时间的行仍为 `\"-\"`。")
     @Tag(name = "04-架次管理")
     @GetMapping("/sorties")
     public ResponseEntity<?> listSorties(@Parameter(description = "机号（可选，不传返回各源全部架次）", example = "B-1234")

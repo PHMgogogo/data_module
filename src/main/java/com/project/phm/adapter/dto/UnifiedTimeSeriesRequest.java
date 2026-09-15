@@ -15,7 +15,8 @@ import java.util.Map;
  *   <li>航新 / 633：{@code aircraftNumber} → airplaneNum、{@code sortieNumber} → flightNum</li>
  * </ul>
  *
- * <p>startTime / endTime 不由调用方传入，由后端查询三方架次接口后自行推算。</p>
+ * <p>startTime / endTime 可选：不传时后端查询三方架次接口自行推算，
+ * 传了则以传入值为准（两种格式都接受，最终统一转成 ISO 再发给三方时序接口）。</p>
  */
 @Schema(description = "时序数据查询请求")
 public class UnifiedTimeSeriesRequest {
@@ -31,6 +32,14 @@ public class UnifiedTimeSeriesRequest {
 
     @Schema(description = "机型（可选，三方 → airplaneType）", example = "B737-800")
     private String airplaneType;
+
+    @Schema(description = "开始时间（可选，不传则查三方架次接口推算）",
+            example = "2026-07-23 10:30:00")
+    private String startTime;
+
+    @Schema(description = "结束时间（可选，不传则查三方架次接口推算）",
+            example = "2026-07-23 14:20:00")
+    private String endTime;
 
     @Schema(description = "所查参数列表（本地 → 列名；633 → Paralist；航新 → parameters）",
             example = "[\"ALTITUDE\", \"SPEED\", \"N1\"]")
@@ -50,6 +59,10 @@ public class UnifiedTimeSeriesRequest {
     public void setSortieNumber(String sortieNumber) { this.sortieNumber = sortieNumber; }
     public String getAirplaneType() { return airplaneType; }
     public void setAirplaneType(String airplaneType) { this.airplaneType = airplaneType; }
+    public String getStartTime() { return startTime; }
+    public void setStartTime(String startTime) { this.startTime = startTime; }
+    public String getEndTime() { return endTime; }
+    public void setEndTime(String endTime) { this.endTime = endTime; }
     public List<String> getParalist() { return paralist; }
     public void setParalist(List<String> paralist) { this.paralist = paralist; }
     public String getSamplingRate() { return samplingRate; }

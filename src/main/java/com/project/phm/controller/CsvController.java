@@ -555,6 +555,8 @@ public class CsvController {
      *   "sortieId": 1,
      *   "aircraftNumber": "B-1234",
      *   "sortieNumber": "CA1234-20260723",
+     *   "startTime": "2026-07-23 10:30:00",
+     *   "endTime": "2026-07-23 14:20:00",
      *   "paralist": ["ALTITUDE", "SPEED"],
      *   "samplingRate": "10"
      * }
@@ -579,8 +581,9 @@ public class CsvController {
             description = "返回统一格式 `data.timestamps` + `data.parameters[{name, values}]`。\n\n" +
                     "**定位规则**：`sortieId` → 本地 config_data_mapping 关联的 csv_xxx 表；" +
                     "`aircraftNumber` + `sortieNumber` → 三方（机号 → airplaneNum、架次号 → flightNum）。\n" +
-                    "**时间**：不需要传 startTime/endTime，后端先查三方架次接口取起止时间，转成 " +
-                    "`2026-07-23T10:30:00.000Z` 形式后传给三方时序接口。\n" +
+                    "**时间**：`startTime` / `endTime` 可选 —— 传了以传入值为准；不传则由后端先查三方架次接口取起止时间。" +
+                    "两者最终都转成 `2026-07-23T10:30:00.000Z` 形式再传给三方时序接口。" +
+                    "传入格式支持 `2026-07-23 10:30:00`（含小数秒）与 ISO 两种。\n" +
                     "**采样率**：`samplingRate` 不传默认 10。\n" +
                     "**只返回一个源**：按机号 / 架次过滤后只有归属平台有数据，优先级为 本地 → 航新 → 633，" +
                     "都没有数据时返回空的 timestamps / parameters。")

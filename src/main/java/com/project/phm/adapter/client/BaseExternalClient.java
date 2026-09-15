@@ -1,6 +1,7 @@
 package com.project.phm.adapter.client;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.type.CollectionType;
@@ -13,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
 
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -129,6 +131,63 @@ public abstract class BaseExternalClient {
         return parseAircraftResponse(json);
     }
 
+    // ==================== 构型查询 ====================
+
+    /**
+     * 构型查询：返回 {@code data.rows} 的原始 Map 列表。
+     *
+     * <p>三方返回的字段名大小写不统一（GXBS / gxbs / SJgxbs …），故不绑定 DTO，
+     * 交由调用方按忽略大小写的规则取值。</p>
+     *
+     * @param configPath 构型接口路径，取自 {@code support-system.paths.getDzgxxx}
+     */
+    public List<Map<String, Object>> queryConfigItems(String configPath, Map<String, Object> params) {
+        UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(buildUrl(configPath));
+        if (params != null) {
+            // 缺省视为 null：仅在携带值时拼入，避免向第三方传空串
+            for (Map.Entry<String, Object> e : params.entrySet()) {
+                if (e.getValue() != null) {
+                    urlBuilder.queryParam(e.getKey(), e.getValue());
+                }
+            }
+        }
+        String url = urlBuilder.build().toUriString();
+        printRequest("GET", url, params);
+
+        String json = restTemplate.getForObject(url, String.class);
+        if (json == null || json.isEmpty()) {
+            log.warn("[{}] 外来平台构型接口返回空响应", getPlatformName());
+            return Collections.emptyList();
+        }
+        printRawResponse("GET", url, json);
+        return parseConfigRows(json);
+    }
+
+    /** 解析构型接口返回的 JSON，取出 data.rows 的原始行 */
+    private List<Map<String, Object>> parseConfigRows(String json) {
+        try {
+            JsonNode root = objectMapper.readTree(json);
+            int code = root.path("code").asInt(0);
+            if (code != 200) {
+                log.warn("[{}] 外来平台构型接口返回异常状态码: code={}, message={}",
+                        getPlatformName(), code, root.path("message").asText());
+                return Collections.emptyList();
+            }
+            JsonNode rowsNode = root.path("data").path("rows");
+            if (!rowsNode.isArray()) {
+                return Collections.emptyList();
+            }
+            List<Map<String, Object>> rows = new ArrayList<>(rowsNode.size());
+            for (JsonNode row : rowsNode) {
+                rows.add(objectMapper.convertValue(row, new TypeReference<Map<String, Object>>() {}));
+            }
+            return rows;
+        } catch (Exception e) {
+            log.error("[{}] 构型JSON解析失败: {}", getPlatformName(), e.getMessage(), e);
+            return Collections.emptyList();
+        }
+    }
+
     // ==================== 通用 POST（原始 data） ====================
 
     public Object postForRawData(String path, Object body) {
@@ -185,8 +244,16 @@ public abstract class BaseExternalClient {
 
     // ==================== HTTP 调用日志 ====================
 
-    /** 打印请求：输出可直接复制执行的 curl 命令 */
+    /**
+     * 打印请求：先输出带参数的调用行，再输出可直接复制执行的 curl 命令。
+     *
+     * <p>GET 的参数走 query string，URL 里已能看出，这里单独再列一栏是为了让
+     * 出站参数一眼可见，不必去 URL 里找。</p>
+     */
     private void printRequest(String method, String url, Object params) {
+        log.info("[外来平台调用] {} 请求方式: {}, URL: {}, 参数: {}",
+                getPlatformName(), method, url, toParamsText(params));
+
         StringBuilder cmd = new StringBuilder("curl -X ")
                 .append(method).append(" \"").append(url).append('"');
         // GET/DELETE 无 body；POST/PUT 把请求参数序列化为 JSON body
@@ -201,6 +268,17 @@ public abstract class BaseExternalClient {
     private void printRawResponse(String method, String url, String rawJson) {
         log.info("[外来平台调用] {} 请求方式: {}, URL: {} 原始返回: {}",
                 getPlatformName(), method, url, rawJson);
+    }
+
+    /** 请求参数文本：无参数时显示「无」，否则序列化为 JSON */
+    private String toParamsText(Object params) {
+        if (params == null) {
+            return "无";
+        }
+        if (params instanceof Map && ((Map<?, ?>) params).isEmpty()) {
+            return "无";
+        }
+        return toRequestBodyJson(params);
     }
 
     /** 请求参数序列化为 JSON body，null/序列化失败时回退为空对象或原文 */

@@ -69,7 +69,7 @@ public class UnifiedSortieController {
             deprecated = true,
             description = "**⚠️ 已废弃**，请改用 `GET /aircraft/sorties?aircraftNumber=`：返回裸数组，已聚合本地 + 航新 + 633；" +
                     "第三方行 `sortieId` = 原 `id`、`aircraftNumber` = 原 `airplaneNum`、`sortieNumber` = 原 `flightNum`，" +
-                    "`flightDate`/`startTime`/`endTime` 固定为 `\"-\"`。\n\n" +
+                    "`flightDate` 为三方 `startTime` 的日期部分、`startTime`/`endTime` 为其时刻部分。\n\n" +
                     "**（历史说明）** 并发查询航新、633 和本地三个数据源的架次数据，合并后返回统一的响应列表。\n\n" +
                     "**合并规则**：以 (机号 + 架次号) 为键匹配，同一架次的记录合并所有字段，不同来源的字段互补。\n\n" +
                     "**响应说明**：data 为合并后的架次列表；hangxin/sansan/local 分别记录各源的查询条数和状态。")
@@ -127,8 +127,19 @@ public class UnifiedSortieController {
         return ResponseEntity.ok(result);
     }
 
-    @Operation(summary = "聚合查询单机构型",
-            description = "查询航新、633 和本地三个数据源的单机构型信息，合并后返回统一的响应列表。\n\n" +
+    /**
+     * 聚合查询单机构型（已废弃）。
+     *
+     * @deprecated 请改用 {@code GET /aircraft/config-items}：传 modelCode 只查本地该机型，
+     *             不传则只查三方（航新 + 633，分页固定 page=1、rows=10），一次调用只返回一个来源。
+     */
+    @Deprecated
+    @Operation(summary = "【已废弃】聚合查询单机构型",
+            deprecated = true,
+            description = "**⚠️ 已废弃**，请改用 `GET /aircraft/config-items?modelCode=`：" +
+                    "传 modelCode 只查本地该机型，不传只查三方（航新 + 633，分页固定 page=1、rows=10），" +
+                    "一次调用只返回一个来源。\n\n" +
+                    "**（历史说明）** 查询航新、633 和本地三个数据源的单机构型信息，合并后返回统一的响应列表。\n\n" +
                     "**筛选规则**：不传 modelCode 返回本地全部机型及外源的全部构型；传 modelCode 仅查该机型的构型。\n\n" +
                     "**响应说明**：data 为各源直接拼接，不做跨源去重，以 source 字段区分来源。")
     @GetMapping("/config/query")
