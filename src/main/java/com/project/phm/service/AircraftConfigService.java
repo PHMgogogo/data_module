@@ -838,9 +838,32 @@ public class AircraftConfigService {
                     datePart(ext.getStartTime()))));
             sortie.setStartTime(placeholderIfAbsent(timePart(ext.getStartTime())));
             sortie.setEndTime(placeholderIfAbsent(timePart(ext.getEndTime())));
+            sortie.setParameterGroupId(ext.getParameterGroupId());
             sorties.add(sortie);
         }
         return sorties;
+    }
+
+    /**
+     * 按参数组ID查航新的参数字段名列表（该架次有哪些列）。
+     *
+     * <p>parameterGroupId 来自 {@link #listSorties} 里航新行下发的字段，
+     * 拿到字段名后才能按名查时序数据。</p>
+     *
+     * <p>平台未配置 / 不可达 / 解析失败时返回空列表（记日志），不向上抛。</p>
+     */
+    public List<String> listParameterNames(String parameterGroupId) {
+        if (parameterGroupId == null || parameterGroupId.isEmpty()) {
+            return Collections.emptyList();
+        }
+        try {
+            List<String> names = hangxinClient.queryParameterNames(parameterGroupId);
+            log.info("参数组 {} 字段名查询完成: {} 个", parameterGroupId, names.size());
+            return names;
+        } catch (Exception e) {
+            log.warn("参数组 {} 字段名查询失败: {}", parameterGroupId, e.getMessage());
+            return Collections.emptyList();
+        }
     }
 
     /**

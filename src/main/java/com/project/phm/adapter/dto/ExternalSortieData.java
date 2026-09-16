@@ -34,6 +34,9 @@ public class ExternalSortieData {
     @JsonProperty("paralist")
     private List<String> paramList;
 
+    @Schema(description = "参数组ID（航新返回，用于查该架次的参数字段名）")
+    private String parameterGroupId;
+
     @Schema(description = "飞行日期（633 从 startTime 提取）")
     private String flightDate;
 
@@ -51,6 +54,8 @@ public class ExternalSortieData {
     public void setEndTime(String endTime) { this.endTime = endTime; }
     public List<String> getParamList() { return paramList; }
     public void setParamList(List<String> paramList) { this.paramList = paramList; }
+    public String getParameterGroupId() { return parameterGroupId; }
+    public void setParameterGroupId(String parameterGroupId) { this.parameterGroupId = parameterGroupId; }
     public String getFlightDate() { return flightDate; }
     public void setFlightDate(String flightDate) { this.flightDate = flightDate; }
 }

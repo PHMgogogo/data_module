@@ -1,6 +1,7 @@
 package com.project.phm.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -34,6 +35,14 @@ public class Sortie {
     @Schema(description = "结束时间", example = "14:20:00")
     private String endTime;
 
+    /**
+     * 参数组ID — 仅航新行有值，用于查该架次的参数字段名。
+     * 不入库：sortie 表没有该列，本地查询也不会带出它，只作响应字段。
+     */
+    @Schema(description = "参数组ID（仅航新行下发，用于查参数字段名）")
+    @TableField(exist = false)
+    private String parameterGroupId;
+
     public Long getSortieId() { return sortieId; }
     public void setSortieId(Long sortieId) { this.sortieId = sortieId; }
 
@@ -51,4 +60,7 @@ public class Sortie {
 
     public String getEndTime() { return endTime; }
     public void setEndTime(String endTime) { this.endTime = endTime; }
+
+    public String getParameterGroupId() { return parameterGroupId; }
+    public void setParameterGroupId(String parameterGroupId) { this.parameterGroupId = parameterGroupId; }
 }

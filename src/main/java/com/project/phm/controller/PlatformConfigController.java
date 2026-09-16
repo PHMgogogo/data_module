@@ -40,17 +40,17 @@ public class PlatformConfigController {
         return ResponseEntity.ok(platform);
     }
 
-    @Operation(summary = "新增平台配置", description = "platform 枚举: HANGXIN(航新服务) / SAN_SAN(633服务)")
+    @Operation(summary = "新增平台配置",
+            description = "platform 枚举: HANGXIN(航新服务) / SAN_SAN(633服务)；"
+                    + "config 为 JSON 字符串，各平台所需 key 不同，如 {\"ip\":\"127.0.0.1\",\"port\":123}")
     @PostMapping
     public ResponseEntity<Map<String, Object>> add(
             @RequestParam PlatformType platform,
-            @RequestParam String ip,
-            @RequestParam(required = false) Integer port) {
+            @RequestParam String config) {
         try {
             ExternalPlatform p = new ExternalPlatform();
             p.setPlatformName(platform.getDisplayName());
-            p.setPlatformIp(ip);
-            p.setPort(port);
+            p.setPlatformConfig(config);
             platformConfigService.add(p);
             Map<String, Object> result = new HashMap<>();
             result.put("success", true);
@@ -65,19 +65,18 @@ public class PlatformConfigController {
         }
     }
 
-    @Operation(summary = "更新平台配置", description = "platform 枚举: HANGXIN / SAN_SAN")
+    @Operation(summary = "更新平台配置",
+            description = "platform 枚举: HANGXIN / SAN_SAN；config 为 JSON 字符串，各平台所需 key 不同")
     @PutMapping("/{id}")
     public ResponseEntity<Map<String, Object>> update(
             @PathVariable Long id,
             @RequestParam PlatformType platform,
-            @RequestParam String ip,
-            @RequestParam(required = false) Integer port) {
+            @RequestParam String config) {
         try {
             ExternalPlatform p = new ExternalPlatform();
             p.setId(id);
             p.setPlatformName(platform.getDisplayName());
-            p.setPlatformIp(ip);
-            p.setPort(port);
+            p.setPlatformConfig(config);
             platformConfigService.update(p);
             Map<String, Object> result = new HashMap<>();
             result.put("success", true);
@@ -125,15 +124,15 @@ public class PlatformConfigController {
         }
     }
 
-    @Operation(summary = "测试IP+端口连通性（不保存）")
+    @Operation(summary = "测试连通性（不保存）",
+            description = "config 为 JSON 字符串，各平台所需 key 不同，如 {\"ip\":\"127.0.0.1\",\"port\":123}")
     @PostMapping("/test")
     public ResponseEntity<Map<String, Object>> testConnection(
-            @RequestParam String ip,
-            @RequestParam(required = false) Integer port) {
-        boolean ok = platformConfigService.testConnectivity(ip, port);
+            @RequestParam String config) {
+        boolean ok = platformConfigService.testConnectivity(config);
         Map<String, Object> result = new HashMap<>();
         result.put("success", ok);
-        result.put("message", ok ? "连接成功" : "连接失败，请检查IP和端口");
+        result.put("message", ok ? "连接成功" : "连接失败，请检查配置");
         return ResponseEntity.ok(result);
     }
 }

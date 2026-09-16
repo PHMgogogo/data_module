@@ -7,6 +7,7 @@ import com.project.phm.adapter.dto.SourceInfo;
 import com.project.phm.adapter.dto.UnifiedConfigRequest;
 import com.project.phm.adapter.dto.UnifiedConfigResponse;
 import com.project.phm.entity.ConfigItem;
+import com.project.phm.entity.ExternalPlatform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -53,6 +54,9 @@ public class UnifiedConfigItemService {
         if ("航新".equals(source) || "hangxin".equals(source)) return "航新服务";
         return source;
     }
+
+    /** 航新服务：构型查询走 port2 */
+    private static final String PLATFORM_HANGXIN = "航新服务";
 
     public ApiResult<List<UnifiedConfigResponse>> queryConfigItems(UnifiedConfigRequest request) {
         CompletableFuture<List<UnifiedConfigResponse>> localFuture   = queryLocalSafe(request);
@@ -104,7 +108,10 @@ public class UnifiedConfigItemService {
         return CompletableFuture.supplyAsync(() -> {
             try {
                 String platName = platformName(sourceName);
-                String baseUrl = platformConfigService.getFullBaseUrl(platName);
+                // 构型查询走各平台的构型端口：航新服务为 port2，其余平台退回通用端口
+                String portKey = PLATFORM_HANGXIN.equals(platName)
+                        ? ExternalPlatform.KEY_PORT2 : ExternalPlatform.KEY_PORT;
+                String baseUrl = platformConfigService.getFullBaseUrl(platName, portKey);
                 if (baseUrl == null || baseUrl.isEmpty()) {
                     log.warn("{}未配置 base URL", platName);
                     return Collections.emptyList();
@@ -138,7 +145,11 @@ public class UnifiedConfigItemService {
         });
     }
 
-    /** 解析外部构型接口返回的 JSON，提取 data.rows 并转为统一响应 */
+    /**
+     * 解析外部构型接口返回的 JSON，提取数据行并转为统一响应。
+     *
+     * <p>兼容两种返回形态：{@code data} 直接是数组，或 {@code data.rows}（分页包装）。</p>
+     */
     @SuppressWarnings("unchecked")
     private List<UnifiedConfigResponse> parseExternalConfig(String json, String source) {
         try {
@@ -152,7 +163,8 @@ public class UnifiedConfigItemService {
             if (dataNode.isMissingNode() || dataNode.isNull()) {
                 return Collections.emptyList();
             }
-            JsonNode rowsNode = dataNode.path("rows");
+            // data 直接是数组，或 data.rows 为数组
+            JsonNode rowsNode = dataNode.isArray() ? dataNode : dataNode.path("rows");
             if (rowsNode.isMissingNode() || !rowsNode.isArray()) {
                 return Collections.emptyList();
             }

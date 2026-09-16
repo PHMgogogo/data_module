@@ -341,6 +341,25 @@ public class AircraftController {
         }
     }
 
+    @Operation(summary = "获取架次的参数字段名",
+            description = "按航新架次接口下发的 `parameterGroupId` 查询该架次的参数字段名列表。\n\n" +
+                    "**用途**：字段名是查时序数据的必需参数 —— 先由 `GET /aircraft/sorties` 拿到航新行的 " +
+                    "`parameterGroupId`，再调本接口取到字段名，最后按名查时序数据。\n\n" +
+                    "**返回**：`data` 为字段名裸数组，如 `[\"A8b信号和值故障_JDK_GME_FDR2_A\", ...]`。" +
+                    "仅航新有该能力；平台未配置或不可达时返回空数组。")
+    @Tag(name = "04-架次管理")
+    @GetMapping("/sortie/parameters")
+    public ResponseEntity<?> listSortieParameters(
+            @Parameter(description = "参数组ID（取自 /aircraft/sorties 航新行的 parameterGroupId）",
+                    required = true, example = "2a26c3bf-67b3-4103-a8f0-3ac6d5973786")
+            @RequestParam("parameterGroupId") String parameterGroupId) {
+        try {
+            return ResponseEntity.ok(configService.listParameterNames(parameterGroupId));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("获取参数字段名失败: " + e.getMessage()));
+        }
+    }
+
     @Operation(summary = "获取架次详情",
             description = "根据架次ID获取详细信息。")
     @Tag(name = "04-架次管理")

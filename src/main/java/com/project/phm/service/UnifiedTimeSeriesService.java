@@ -34,7 +34,7 @@ import java.util.concurrent.CompletableFuture;
  * <ul>
  *   <li>本地：按 {@code sortieId} 从 config_data_mapping 查出该架次关联的 csv_xxx 表</li>
  *   <li>航新 / 633：按机号 + 架次号先查三方架次接口拿到 startTime / endTime
- *       （转成 {@code 2026-07-23T10:30:00.000Z} 形式），再查三方时序接口。
+ *       （转成 {@code 2026-07-23T10:30:00.000+08:00} 形式，北京时间），再查三方时序接口。
  *       请求体里传了 {@code startTime} / {@code endTime} 时以传入值为准，不再用架次接口的值</li>
  * </ul>
  *
@@ -48,11 +48,14 @@ public class UnifiedTimeSeriesService {
     private static final String SUCCESS = "success";
     private static final String TS_PATH = "/processing/data/querySorties";
 
-    /** 三方时序接口要求的时间格式 */
+    /** 三方时序接口要求的时间格式（北京时间，东八区） */
     private static final DateTimeFormatter ISO_OUT =
-            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
+            DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSSXXX");
 
-    /** 三方架次接口返回的无时区时间格式（按原样加 Z 后缀，不做时区换算） */
+    /** 北京时区偏移（东八区） */
+    private static final ZoneOffset CHINA_OFFSET = ZoneOffset.ofHours(8);
+
+    /** 三方架次接口返回的无时区时间格式（按北京时间解释） */
     private static final DateTimeFormatter[] LOCAL_TIME_IN = {
             // 空格分隔、秒后小数位数不定：2026-01-01 10:00:00 / 10:00:00.00 / 10:00:00.123456789
             new DateTimeFormatterBuilder()
@@ -243,43 +246,46 @@ public class UnifiedTimeSeriesService {
     }
 
     /**
-     * 取生效时间：调用方传了就用调用方传的，否则用三方架次接口返回的，两者都统一转成 ISO。
+     * 取生效时间：调用方传了就用调用方传的，否则用三方架次接口返回的，两者都统一转成北京时间 ISO。
      *
      * <p>调用方传的格式比三方宽松（空格或 ISO 分隔都行），转换失败时原样透传并告警。</p>
      */
     static String resolveTime(String fromRequest, String fromSortie) {
         if (fromRequest != null && !fromRequest.trim().isEmpty()) {
-            return toIsoUtc(fromRequest);
+            return toChinaIso(fromRequest);
         }
-        return toIsoUtc(fromSortie);
+        return toChinaIso(fromSortie);
     }
 
     /**
-     * 三方时间转为 {@code 2026-07-23T10:30:00.000Z} 形式。
+     * 三方时间转为 {@code 2026-07-23T10:30:00.000+08:00} 形式（北京时间）。
      *
-     * <p>无时区输入（三方架次返回的 {@code 2026-07-23 10:30:00}）按原值加 Z 后缀；
-     * 带时区/UTC 后缀的输入先换算到 UTC 再格式化；无法识别的格式原样返回。</p>
+     * <p>无时区输入（三方架次返回的 {@code 2026-07-23 10:30:00}）按北京时间解释，原值即北京时间；
+     * 带时区/UTC 后缀的输入先换算到北京时间再格式化；无法识别的格式原样返回。</p>
      */
-    static String toIsoUtc(String raw) {
+    static String toChinaIso(String raw) {
         if (raw == null || raw.trim().isEmpty()) {
             return null;
         }
         String value = raw.trim();
         for (DateTimeFormatter fmt : LOCAL_TIME_IN) {
             try {
-                return LocalDateTime.parse(value, fmt).format(ISO_OUT);
+                return LocalDateTime.parse(value, fmt)
+                        .atOffset(CHINA_OFFSET)
+                        .format(ISO_OUT);
             } catch (DateTimeParseException ignored) {
                 // 换下一种格式
             }
         }
         try {
             Instant instant = OffsetDateTime.parse(value).toInstant();
-            return LocalDateTime.ofInstant(instant, ZoneOffset.UTC).format(ISO_OUT);
+            return instant.atOffset(CHINA_OFFSET).format(ISO_OUT);
         } catch (DateTimeParseException ignored) {
             // 换下一种格式
         }
         try {
-            return LocalDateTime.ofInstant(Instant.parse(value), ZoneOffset.UTC).format(ISO_OUT);
+            Instant instant = Instant.parse(value);
+            return instant.atOffset(CHINA_OFFSET).format(ISO_OUT);
         } catch (DateTimeParseException ignored) {
             log.warn("时间格式无法识别，原样透传给三方: {}", raw);
             return value;

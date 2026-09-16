@@ -152,17 +152,14 @@ public class SchemaInitializer {
         String sql = "CREATE TABLE IF NOT EXISTS external_platform ("
                 + "id INT IDENTITY(1,1) NOT NULL, "
                 + "platform_name VARCHAR(100) NOT NULL, "
-                + "platform_ip VARCHAR(100) NOT NULL DEFAULT '', "
-                + "port INT, "
+                + "platform_config VARCHAR(1024) DEFAULT '{\"ip\":\"127.0.0.1\",\"port\":123}', "
                 + "PRIMARY KEY (id)"
                 + ")";
         jdbcTemplate.execute(sql);
-        // 兼容旧表：添加 port 列（忽略已存在），删除 base_url 列（忽略不存在）
+        // 兼容旧表：添加 platform_config 列（忽略已存在）
         try {
-            jdbcTemplate.execute("ALTER TABLE external_platform ADD port INT");
-        } catch (Exception ignored) { }
-        try {
-            jdbcTemplate.execute("ALTER TABLE external_platform DROP COLUMN base_url");
+            jdbcTemplate.execute("ALTER TABLE external_platform ADD platform_config VARCHAR(1024) "
+                    + "DEFAULT '{\"ip\":\"127.0.0.1\",\"port\":123}'");
         } catch (Exception ignored) { }
         log.info("表 external_platform 已就绪");
     }
