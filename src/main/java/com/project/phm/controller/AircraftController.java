@@ -30,10 +30,15 @@ public class AircraftController {
 
     // ==================== 机型管理 ====================
 
-    @Operation(summary = "获取所有机型列表",
+    @Operation(summary = "获取所有机型列表（同时重建平台路由索引）",
             description = "返回机型列表：先取本地 aircraft_model 表全部机型，再依次拼接航新、633 平台的机型。\n\n" +
                     "**合并规则**：跨源不去重，顺序为 本地 → 航新 → 633。\n" +
                     "**第三方行字段**：`modelCode` 为 `airplaneType:id`；`manufacturer` / `description` / `createdAt` 固定为 `\"-\"`。\n" +
+                    "**副作用（重要）**：本接口是平台路由索引的**唯一重建入口**。调用它会一次性并发拉取" +
+                    "两个平台的机型 + 单机 + 架次全量，建成一张「id → 归属平台」的内存映射。\n" +
+                    "`GET /aircraft/plane`、`GET /aircraft/sorties`、`POST /csv/query-timeseries` 靠这张表定向到单源，" +
+                    "因此**应用启动后应至少调用一次本接口**（启动时也会自动异步预热一次）。\n" +
+                    "某个平台某一层本次不可用时，该层沿用上一轮的索引，不会被清空。\n" +
                     "**容错**：任一第三方平台未配置或不可达时仅跳过该平台，本地数据仍以 HTTP 200 返回。")
     @Tag(name = "01-机型管理")
     @GetMapping("/models")
@@ -86,14 +91,18 @@ public class AircraftController {
 
     // ==================== 飞机单机管理 ====================
 
-    @Operation(summary = "获取单机列表",
-            description = "返回单机列表：先取本地 aircraft_config 表，再依次拼接航新、633 平台的单机。\n\n" +
-                    "**合并规则**：跨源不去重，顺序为 本地 → 航新 → 633。" +
-                    "`modelCode` 同时作用于本地（按机型过滤）和两个第三方平台（透传为 `airplaneType` 过滤）；" +
-                    "`airplaneNum` 新接口未暴露，向三方传 null。\n" +
+    @Operation(summary = "获取单机列表（传机型时定向单源）",
+            description = "**不传 `modelCode`**：旧行为 —— 本地 aircraft_config 全部，再依次拼接航新、633 的单机，" +
+                    "跨源不去重，顺序为 本地 → 航新 → 633。\n\n" +
+                    "**传 `modelCode`**：定向查询 —— 先查平台路由索引确定该机型的归属：" +
+                    "命中本地只查本地表；命中某平台则**只向那一个平台**发请求，并把合成码还原成真实的 `airplaneType`" +
+                    "（三方收到的是 `K4-WS19` 而不是 `K4-WS19:6`）。\n" +
+                    "**未命中**（机型不存在，或应用启动后还没调过 `GET /aircraft/models`）时返回 `[]` 并记 warn 日志，" +
+                    "不会回落其它源。\n" +
+                    "**注意 `modelCode` 的取值**：必须用 `GET /aircraft/models` 下发的形态 —— 本地机型是裸机型代码，" +
+                    "三方行是 `airplaneType:id` 合成码。直接用三方的裸 `airplaneType` 查不到（那正是历史 bug）。\n" +
                     "**第三方行字段**：`aircraftNumber` 取原 `airplaneNum`，`modelCode` 取原 `airplaneType`；" +
-                    "`airline` / `configVersion` / `status` / `createdAt` 固定为 `\"-\"`。\n" +
-                    "**容错**：任一第三方平台未配置或不可达时仅跳过该平台，本地数据仍以 HTTP 200 返回。")
+                    "`airline` / `configVersion` / `status` / `createdAt` 固定为 `\"-\"`。")
     @Tag(name = "02-飞机单机管理")
     @GetMapping("/plane")
     public ResponseEntity<?> listPlanes(@Parameter(description = "机型代码（可选）", example = "B737-800")
@@ -323,9 +332,16 @@ public class AircraftController {
 
     // ==================== 架次管理 ====================
 
-    @Operation(summary = "获取架次列表",
-            description = "返回架次列表：先取本地 sortie 表，再依次拼接航新、633 平台的架次（跨源不去重）。\n\n" +
-                    "**第三方行字段映射**：`sortieId` = 原 `id`、`aircraftNumber` = 原 `airplaneNum`、" +
+    @Operation(summary = "获取架次列表（传机号时定向单源）",
+            description = "**不传 `aircraftNumber`**：旧行为 —— 本地 sortie 表全部，" +
+                    "再依次拼接航新、633 的架次（跨源不去重）。\n\n" +
+                    "**传 `aircraftNumber`**：定向查询 —— 先查平台路由索引确定该机号的归属，" +
+                    "命中的源才发请求；**未命中**（机号不存在，或应用启动后还没调过 `GET /aircraft/models`）" +
+                    "时返回 `[]` 并记 warn 日志，不回落其它源。\n\n" +
+                    "**`sortieKey`（新增字段，请优先使用）**：跨源的架次统一标识 —— 本地行是 `sortieId` 的字符串形态，" +
+                    "三方行是平台原始 id（UUID 形态，装不进 Long 形的 `sortieId`，所以三方行的 `sortieId` 为 `null`）。" +
+                    "`POST /csv/query-timeseries` 的 `sortieId` 参数就是这个值。\n" +
+                    "**第三方行字段映射**：`aircraftNumber` = 原 `airplaneNum`、" +
                     "`sortieNumber` = 原 `flightNum`；`flightDate` / `startTime` / `endTime` 由三方 " +
                     "`startTime` / `endTime`（形如 `2026-01-01 10:00:00.00`）拆分而来 —— " +
                     "`flightDate` 取日期部分（`2026-01-01`）、`startTime` / `endTime` 只取时刻部分（`10:00:00`），" +
@@ -346,7 +362,8 @@ public class AircraftController {
                     "**用途**：字段名是查时序数据的必需参数 —— 先由 `GET /aircraft/sorties` 拿到航新行的 " +
                     "`parameterGroupId`，再调本接口取到字段名，最后按名查时序数据。\n\n" +
                     "**返回**：`data` 为字段名裸数组，如 `[\"A8b信号和值故障_JDK_GME_FDR2_A\", ...]`。" +
-                    "仅航新有该能力；平台未配置或不可达时返回空数组。")
+                    "仅航新有该能力；633 行虽然也下发 `parameterGroupId`，但本接口只认航新，" +
+                    "传入 633 的参数组ID 会返回空数组。平台未配置或不可达时同样返回空数组。")
     @Tag(name = "04-架次管理")
     @GetMapping("/sortie/parameters")
     public ResponseEntity<?> listSortieParameters(

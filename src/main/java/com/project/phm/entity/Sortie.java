@@ -43,6 +43,18 @@ public class Sortie {
     @TableField(exist = false)
     private String parameterGroupId;
 
+    /**
+     * 架次统一标识 — 跨源的架次身份，时序查询按它定向到具体平台。
+     *
+     * <p>本地行 = {@code sortieId} 的字符串形态；三方行 = 平台原始 id（UUID 形态，
+     * 装不进本类的 {@code Long sortieId}，所以本地行有值、三方行没有）。</p>
+     *
+     * <p>不入库：sortie 表没有该列，只在响应里下发。</p>
+     */
+    @Schema(description = "架次统一标识（本地为 sortieId 字符串，三方为平台原始 id；时序查询回传本字段）")
+    @TableField(exist = false)
+    private String sortieKey;
+
     public Long getSortieId() { return sortieId; }
     public void setSortieId(Long sortieId) { this.sortieId = sortieId; }
 
@@ -63,4 +75,7 @@ public class Sortie {
 
     public String getParameterGroupId() { return parameterGroupId; }
     public void setParameterGroupId(String parameterGroupId) { this.parameterGroupId = parameterGroupId; }
+
+    public String getSortieKey() { return sortieKey; }
+    public void setSortieKey(String sortieKey) { this.sortieKey = sortieKey; }
 }

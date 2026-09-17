@@ -542,19 +542,21 @@ public class CsvController {
     // ==================== 时序数据统一查询接口 ====================
 
     /**
-     * 时序数据查询（本地 + 航新 + 633）
+     * 时序数据查询（按架次定向到本地 / 航新 / 633 中的一家）
      *
-     * <p>按架次定位：本地用 sortieId 查关联的 csv_xxx 表；航新 / 633 用机号 + 架次号，
-     * 先查三方架次接口拿到起止时间（转成 ISO 形式）再查三方时序接口。
-     * 过滤后实际只有归属平台会返回数据，因此只返回第一个有数据的源，不做拼接。</p>
+     * <p>只认一个 {@code sortieId}，它就是 {@code GET /aircraft/sorties} 下发的 {@code sortieKey}：
+     * 后端在内存的平台路由索引里查出该架次归属哪个平台，然后只向那<b>一个</b>平台发请求。
+     * 本地走 config_data_mapping 关联的 csv_xxx 表；三方先查架次接口拿起止时间
+     * （转成 ISO 形式）再查时序接口。</p>
+     *
+     * <p>索引未命中（id 不存在 / 应用刚启动还没建过索引）时返回空结构并记 warn 日志，
+     * 不回落其它源 —— 索引由 {@code GET /aircraft/models} 建立。</p>
      *
      * <p><b>请求示例：</b></p>
      * <pre>{@code
      * POST /csv/query-timeseries
      * {
-     *   "sortieId": 1,
-     *   "aircraftNumber": "B-1234",
-     *   "sortieNumber": "CA1234-20260723",
+     *   "sortieId": "1",
      *   "startTime": "2026-07-23 10:30:00",
      *   "endTime": "2026-07-23 14:20:00",
      *   "paralist": ["ALTITUDE", "SPEED"],
@@ -577,24 +579,27 @@ public class CsvController {
      * }
      * }</pre>
      */
-    @Operation(summary = "时序数据查询（本地 / 航新 / 633）",
+    @Operation(summary = "时序数据查询（按架次定向到唯一平台）",
             description = "返回统一格式 `data.timestamps` + `data.parameters[{name, values}]`。\n\n" +
-                    "**定位规则**：`sortieId` → 本地 config_data_mapping 关联的 csv_xxx 表；" +
-                    "`aircraftNumber` + `sortieNumber` → 三方（机号 → airplaneNum、架次号 → flightNum）。\n" +
+                    "**定位规则**：只认 `sortieId` —— 取 `GET /aircraft/sorties` 返回的 `sortieKey`" +
+                    "（本地行是数字主键的字符串，三方行是平台原始 id）。后端据此在内存路由索引里" +
+                    "确定该架次归属本地 / 航新 / 633，**只向那一个平台发请求**。\n" +
+                    "**未命中**：`sortieId` 不在索引里（id 不存在，或应用刚启动还没建过索引）时返回空的" +
+                    " timestamps / parameters 并记 warn 日志，不会回落其它源。索引由 `GET /aircraft/models` 建立。\n" +
                     "**时间**：`startTime` / `endTime` 可选 —— 传了以传入值为准；不传则由后端先查三方架次接口取起止时间。" +
                     "两者最终都转成 `2026-07-23T10:30:00.000Z` 形式再传给三方时序接口。" +
                     "传入格式支持 `2026-07-23 10:30:00`（含小数秒）与 ISO 两种。\n" +
                     "**采样率**：`samplingRate` 不传默认 10。\n" +
-                    "**只返回一个源**：按机号 / 架次过滤后只有归属平台有数据，优先级为 本地 → 航新 → 633，" +
-                    "都没有数据时返回空的 timestamps / parameters。")
+                    "**aircraftNumber / airplaneType**：可选补充，只在索引缺少该架次的对应字段时才会用到；" +
+                    "带冒号的合成机型码（`K4-WS19:6`）不会被转发给三方。")
     @Tag(name = "05-CSV数据管理")
     @PostMapping("/query-timeseries")
     public ResponseEntity<ApiResult<UnifiedTimeSeriesResponse>> queryTimeSeries(
             @RequestBody UnifiedTimeSeriesRequest request) {
         try {
-            if (request.getSortieId() == null && !request.hasExternalIdentifier()) {
+            if (!request.hasSortieIdentifier()) {
                 return ResponseEntity.badRequest()
-                        .body(ApiResult.error(400, "请至少提供 sortieId 或 机号/架次号"));
+                        .body(ApiResult.error(400, "请提供 sortieId（取自 /aircraft/sorties 的 sortieKey）"));
             }
 
             UnifiedTimeSeriesResponse resp = timeSeriesService.querySingleTimeSeries(request);
