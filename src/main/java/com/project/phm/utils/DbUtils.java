@@ -54,7 +54,7 @@ public class DbUtils {
 
         for (int i = 0; i < columns.size(); i++) {
             String column = columns.get(i);
-            sql.append(column).append(" VARCHAR(2000)");
+            sql.append(quoteIdentifier(column)).append(" VARCHAR(2000)");
             if (i < columns.size() - 1) {
                 sql.append(",");
             }
@@ -81,7 +81,7 @@ public class DbUtils {
         StringBuilder sql = new StringBuilder();
         sql.append("INSERT INTO " + tableName + " (");
         for (int i = 0; i < columns.size(); i++) {
-            sql.append(columns.get(i));
+            sql.append(quoteIdentifier(columns.get(i)));
             if (i < columns.size() - 1) {
                 sql.append(",");
             }
@@ -242,8 +242,15 @@ public class DbUtils {
      */
     public List<String> getColumnNames(String tableName) {
         String sql = "SELECT COLUMN_NAME FROM USER_TAB_COLUMNS WHERE TABLE_NAME = ? ORDER BY COLUMN_ID";
-        List<String> columns = jdbcTemplate.queryForList(sql, String.class, tableName.toUpperCase());
-        return columns.stream().map(String::toLowerCase).collect(Collectors.toList());
+        return jdbcTemplate.queryForList(sql, String.class, tableName.toUpperCase());
+    }
+
+    /** 将列名作为数据库引用标识符，支持中文、空格和特殊字符。 */
+    public static String quoteIdentifier(String identifier) {
+        if (identifier == null) {
+            throw new IllegalArgumentException("标识符不能为空");
+        }
+        return "\"" + identifier.replace("\"", "\"\"") + "\"";
     }
 
     /**

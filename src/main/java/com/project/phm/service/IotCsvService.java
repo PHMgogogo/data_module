@@ -86,7 +86,7 @@ public class IotCsvService {
                 throw new IllegalArgumentException("CSV文件为空");
             }
             for (String col : header) {
-                columns.add(CsvUtils.processColumnName(col));
+                columns.add(CsvUtils.sanitizeColumnName(col));
             }
 
             // 检测时间戳列

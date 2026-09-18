@@ -89,6 +89,7 @@ public class AsyncCsvService {
             }
 
             // 计算原始数据哈希并保存（用于后续导出校验）
+            CsvUtils.validateColumnNames(columns);
             String originalDataHash = validationUtils.calculateDataHash(fullData);
             dbUtils.saveTableMetadata(tableName, "original_data_hash", originalDataHash);
             dbUtils.saveTableMetadata(tableName, "original_row_count", String.valueOf(dataRows.size()));

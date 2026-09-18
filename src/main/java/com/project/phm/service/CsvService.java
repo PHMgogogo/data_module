@@ -123,6 +123,7 @@ public class CsvService {
         if (columns.isEmpty()) {
             throw new IllegalArgumentException("CSV文件为空");
         }
+        CsvUtils.validateColumnNames(columns);
 
         int expectedRows = dataRows.size();
 
@@ -267,10 +268,7 @@ public class CsvService {
             String[] rowData = new String[dataColumns.size()];
             for (int i = 0; i < dataColumns.size(); i++) {
                 String column = dataColumns.get(i);
-                Object value = row.get(column.toUpperCase());
-                if (value == null) {
-                    value = row.get(column.toLowerCase());
-                }
+                Object value = getValueIgnoreCase(row, column);
                 rowData[i] = value != null ? value.toString() : "";
             }
             csvData.add(rowData);
@@ -368,11 +366,30 @@ public class CsvService {
             numericCols = Arrays.asList(numericColsStr.split(","));
         }
 
-        if (!columnTypes.isEmpty()) {
-            for (Map.Entry<String, String> entry : columnTypes.entrySet()) {
-                if (!numericCols.contains(entry.getKey())) {
-                    textCols.add(entry.getKey());
-                }
+        // 将元数据中的历史小写列名映射回数据库实际列名，避免引用标识符时大小写不匹配。
+        Map<String, String> resolvedTypes = new LinkedHashMap<>();
+        for (Map.Entry<String, String> entry : columnTypes.entrySet()) {
+            String actual = findColumnIgnoreCase(dataColumns, entry.getKey());
+            if (actual != null) {
+                resolvedTypes.put(actual, entry.getValue());
+            }
+        }
+        List<String> resolvedNumeric = new ArrayList<>();
+        for (String col : numericCols) {
+            String actual = findColumnIgnoreCase(dataColumns, col);
+            if (actual != null) {
+                resolvedNumeric.add(actual);
+            }
+        }
+        String resolvedTimestamp = timestampColumn == null ? null
+                : findColumnIgnoreCase(dataColumns, timestampColumn);
+
+        columnTypes = resolvedTypes;
+        numericCols = resolvedNumeric;
+        timestampColumn = resolvedTimestamp;
+        for (Map.Entry<String, String> entry : columnTypes.entrySet()) {
+            if (!numericCols.contains(entry.getKey())) {
+                textCols.add(entry.getKey());
             }
         }
 
@@ -406,10 +423,11 @@ public class CsvService {
             Map<String, Map<String, Object>> stats = new LinkedHashMap<>();
             for (String col : numericCols) {
                 try {
+                    String quotedCol = DbUtils.quoteIdentifier(col);
                     String sql = String.format(
                         "SELECT MIN(CAST(%s AS DOUBLE)) as min_val, MAX(CAST(%s AS DOUBLE)) as max_val, " +
                         "AVG(CAST(%s AS DOUBLE)) as avg_val, COUNT(%s) as cnt FROM %s WHERE %s IS NOT NULL AND %s != ''",
-                        col, col, col, col, tableName, col, col);
+                        quotedCol, quotedCol, quotedCol, quotedCol, tableName, quotedCol, quotedCol);
                     List<Map<String, Object>> rows = dbUtils.queryForList(sql);
                     if (!rows.isEmpty()) {
                         Map<String, Object> row = rows.get(0);
@@ -441,18 +459,18 @@ public class CsvService {
                 }
                 if (timeCol == null) timeCol = dataColumns.get(0);
 
-                String upperCol = timeCol.toUpperCase();
-                String firstSql = "SELECT " + upperCol + " FROM " + tableName + " WHERE ID = (SELECT MIN(ID) FROM " + tableName + ")";
-                String lastSql = "SELECT " + upperCol + " FROM " + tableName + " WHERE ID = (SELECT MAX(ID) FROM " + tableName + ")";
+                String quotedCol = DbUtils.quoteIdentifier(timeCol);
+                String firstSql = "SELECT " + quotedCol + " FROM " + tableName + " WHERE ID = (SELECT MIN(ID) FROM " + tableName + ")";
+                String lastSql = "SELECT " + quotedCol + " FROM " + tableName + " WHERE ID = (SELECT MAX(ID) FROM " + tableName + ")";
                 List<Map<String, Object>> firstRow = dbUtils.queryForList(firstSql);
                 List<Map<String, Object>> lastRow = dbUtils.queryForList(lastSql);
-                if (!firstRow.isEmpty() && firstRow.get(0).get(upperCol) != null) {
-                    Object start = firstRow.get(0).get(upperCol);
+                if (!firstRow.isEmpty() && getValueIgnoreCase(firstRow.get(0), timeCol) != null) {
+                    Object start = getValueIgnoreCase(firstRow.get(0), timeCol);
                     overview.put("startTime", start);
                     overview.put("startTimeFormatted", start != null ? start.toString() : null);
                 }
-                if (!lastRow.isEmpty() && lastRow.get(0).get(upperCol) != null) {
-                    Object end = lastRow.get(0).get(upperCol);
+                if (!lastRow.isEmpty() && getValueIgnoreCase(lastRow.get(0), timeCol) != null) {
+                    Object end = getValueIgnoreCase(lastRow.get(0), timeCol);
                     overview.put("endTime", end);
                     overview.put("endTimeFormatted", end != null ? end.toString() : null);
                 }
@@ -472,12 +490,14 @@ public class CsvService {
         validateTableName(tableName);
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT * FROM ").append(tableName).append(" WHERE 1=1");
+        String actualColumn = requireColumn(tableName, column);
+        String quotedColumn = DbUtils.quoteIdentifier(actualColumn);
 
         if (minVal != null) {
-            sql.append(" AND CAST(").append(column).append(" AS DOUBLE) >= ").append(minVal);
+            sql.append(" AND CAST(").append(quotedColumn).append(" AS DOUBLE) >= ").append(minVal);
         }
         if (maxVal != null) {
-            sql.append(" AND CAST(").append(column).append(" AS DOUBLE) <= ").append(maxVal);
+            sql.append(" AND CAST(").append(quotedColumn).append(" AS DOUBLE) <= ").append(maxVal);
         }
 
         sql.append(" ORDER BY ID");
@@ -501,11 +521,13 @@ public class CsvService {
         validateTableName(tableName);
 
         StringBuilder where = new StringBuilder(" WHERE 1=1");
+        String actualColumn = requireColumn(tableName, column);
+        String quotedColumn = DbUtils.quoteIdentifier(actualColumn);
         if (minVal != null) {
-            where.append(" AND CAST(").append(column).append(" AS DOUBLE) >= ").append(minVal);
+            where.append(" AND CAST(").append(quotedColumn).append(" AS DOUBLE) >= ").append(minVal);
         }
         if (maxVal != null) {
-            where.append(" AND CAST(").append(column).append(" AS DOUBLE) <= ").append(maxVal);
+            where.append(" AND CAST(").append(quotedColumn).append(" AS DOUBLE) <= ").append(maxVal);
         }
 
         // 统计总数
@@ -601,25 +623,25 @@ public class CsvService {
         if (!missingCols.isEmpty()) {
             throw new IllegalArgumentException("列不存在: " + String.join(", ", missingCols));
         }
+        List<String> resolvedColumns = columnNames.stream()
+                .map(col -> findColumnIgnoreCase(allColumns, col))
+                .collect(Collectors.toList());
 
-        // 构建 SELECT 查询（使用原始大小写列名）
-        String colList = columnNames.stream()
-                .map(String::toUpperCase)
+        // 构建 SELECT 查询，引用原始列名
+        String colList = resolvedColumns.stream()
+                .map(DbUtils::quoteIdentifier)
                 .collect(Collectors.joining(", "));
         String sql = "SELECT " + colList + " FROM " + tableName + " ORDER BY ID";
         List<Map<String, Object>> rows = dbUtils.queryForList(sql);
 
         // 组装 CSV 数据（表头 + 数据行）
         List<String[]> csvData = new ArrayList<>();
-        csvData.add(columnNames.toArray(new String[0]));
+        csvData.add(resolvedColumns.toArray(new String[0]));
         for (Map<String, Object> row : rows) {
-            String[] rowData = new String[columnNames.size()];
-            for (int i = 0; i < columnNames.size(); i++) {
-                String col = columnNames.get(i);
-                Object value = row.get(col.toUpperCase());
-                if (value == null) {
-                    value = row.get(col.toLowerCase());
-                }
+            String[] rowData = new String[resolvedColumns.size()];
+            for (int i = 0; i < resolvedColumns.size(); i++) {
+                String col = resolvedColumns.get(i);
+                Object value = getValueIgnoreCase(row, col);
                 rowData[i] = value != null ? value.toString() : "";
             }
             csvData.add(rowData);
@@ -684,7 +706,7 @@ public class CsvService {
 
         // 4. 执行查询
         String colList = queryCols.stream()
-                .map(String::toUpperCase)
+                .map(DbUtils::quoteIdentifier)
                 .collect(Collectors.joining(", "));
         String sql = "SELECT " + colList + " FROM " + tableName + " ORDER BY ID";
         List<Map<String, Object>> rows = dbUtils.queryForList(sql);
@@ -749,13 +771,25 @@ public class CsvService {
         return null;
     }
 
-    /**
-     * 从行数据中忽略大小写获取列值（达梦默认返回大写列名）。
-     */
+    private String requireColumn(String tableName, String column) {
+        String actual = findColumnIgnoreCase(dbUtils.getColumnNames(tableName), column);
+        if (actual == null) {
+            throw new IllegalArgumentException("列不存在: " + column);
+        }
+        return actual;
+    }
+
+    /** 从行数据中获取列值，优先精确匹配，再忽略大小写匹配。 */
     private Object getValueIgnoreCase(Map<String, Object> row, String column) {
-        Object val = row.get(column.toUpperCase());
-        if (val == null) val = row.get(column.toLowerCase());
-        return val;
+        if (row.containsKey(column)) {
+            return row.get(column);
+        }
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            if (entry.getKey() != null && entry.getKey().equalsIgnoreCase(column)) {
+                return entry.getValue();
+            }
+        }
+        return null;
     }
 
     /**
