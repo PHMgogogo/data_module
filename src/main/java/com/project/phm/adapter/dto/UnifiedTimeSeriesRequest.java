@@ -1,5 +1,6 @@
 package com.project.phm.adapter.dto;
 
+import com.fasterxml.jackson.annotation.JsonAlias;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 import java.util.List;
@@ -7,9 +8,9 @@ import java.util.List;
 /**
  * 时序数据查询请求体。
  *
- * <p><b>定位一个架次只需要一个 {@code sortieId}</b>：它就是 {@code /aircraft/sorties} 下发的
- * {@code sortieKey} —— 本地行是数字主键的字符串形态，三方行是平台原始 id（UUID 形态）。
- * 后端拿它去内存里的平台路由索引查出该架次归属哪个平台，然后只向那一个平台发请求。</p>
+ * <p><b>定位一个架次只需要一个架次标识</b>：字段名为 {@code sortieId}，值取
+ * {@code /aircraft/sorties} 下发的 {@code sortieKey}。为兼容前端直接回传
+ * {@code sortieKey} 字段名，JSON 反序列化时接受 {@code sortieKey} 作为别名。</p>
  *
  * <p>因此请求体里<b>没有</b>独立的「架次号」字段：以前靠 {@code aircraftNumber + sortieNumber}
  * 让后端挨个源试的路子，在定向模式下已经不需要了。</p>
@@ -17,7 +18,8 @@ import java.util.List;
  * <p>{@code aircraftNumber} / {@code airplaneType} 保留为可选补充：正常情况下后端用索引里
  * 随架次一起记下来的值构造三方请求，只有在索引缺少该项时才回落到请求体。</p>
  *
- * <p>startTime / endTime 可选：不传时后端查询三方架次接口自行推算，
+ * <p>startTime / endTime 可选：不传时优先使用 /aircraft/models 缓存的架次时间，
+ * 缓存缺失才查询三方架次接口，
  * 传了则以传入值为准（两种格式都接受，最终统一转成 ISO 再发给三方时序接口）。</p>
  */
 @Schema(description = "时序数据查询请求")
@@ -25,6 +27,7 @@ public class UnifiedTimeSeriesRequest {
 
     @Schema(description = "架次标识（取自 /aircraft/sorties 的 sortieKey；本地为数字主键，三方为平台原始 id）",
             example = "1")
+    @JsonAlias("sortieKey")
     private String sortieId;
 
     @Schema(description = "机号（可选，仅当路由索引缺少该架次的机号时作为补充）", example = "0003")
@@ -70,6 +73,11 @@ public class UnifiedTimeSeriesRequest {
     /** 采样率：未配置时取默认值 10 */
     public String samplingRateOrDefault() {
         return (samplingRate == null || samplingRate.isEmpty()) ? DEFAULT_SAMPLING_RATE : samplingRate;
+    }
+
+    /** 取生效的架次标识。 */
+    public String resolveSortieKey() {
+        return sortieId == null ? null : sortieId.trim();
     }
 
     /** 是否携带了架次标识 —— 这是定向路由的唯一依据，没它就定位不到平台 */

@@ -34,16 +34,16 @@ import java.util.concurrent.CompletableFuture;
  * <p>三个数据源的时序数据统一为 {@link UnifiedTimeSeriesResponse} 格式：</p>
  * <ul>
  *   <li>本地：按 {@code sortieId} 从 config_data_mapping 查出该架次关联的 csv_xxx 表</li>
- *   <li>航新 / 633：按机号 + 架次号先查三方架次接口拿到 startTime / endTime
+ *   <li>航新 / 633：优先使用 /aircraft/sorties 返回后缓存的架次 ID 与 startTime / endTime
  *       （转成 {@code 2026-07-23T10:30:00.000+08:00} 形式，北京时间），再查三方时序接口。
- *       请求体里传了 {@code startTime} / {@code endTime} 时以传入值为准，不再用架次接口的值</li>
+ *       请求体里传了 {@code startTime} / {@code endTime} 时以传入值为准；缓存缺失才回查架次接口</li>
  * </ul>
  *
  * <p>新接口 {@link #querySingleTimeSeries} 走<b>定向单源</b>：请求里的 {@code sortieId}
  * 就是 {@code /aircraft/sorties} 下发的 {@code sortieKey}，拿它去 {@code PlatformRouteService}
  * 查出该架次归属哪个平台，然后只向那一个平台发请求 —— 不再三个源都打一遍。</p>
  *
- * <p>未命中索引（id 不存在，或应用启动后还没调过 {@code /aircraft/models}）时返回空结构并告警。</p>
+ * <p>未命中索引（id 不存在，或对应机号尚未调用 {@code /aircraft/sorties} 加载）时返回空结构并告警。</p>
  */
 @Service
 public class UnifiedTimeSeriesService {
@@ -95,7 +95,7 @@ public class UnifiedTimeSeriesService {
     /**
      * 查询时序数据：按架次标识定向到唯一归属平台，只向那一个平台发请求。
      *
-     * <p>路由依据是 {@code request.sortieId}（即 /aircraft/sorties 下发的 sortieKey）——
+     * <p>路由依据是请求里的 {@code sortieKey}（兼容旧字段 {@code sortieId}）——
      * 它在平台路由索引里对应一个 {@link PlatformRouteService.SortieRef}，里面记着该架次
      * 属于本地 / 航新 / 633，以及构造对应请求所需的全部标识。</p>
      *
@@ -103,7 +103,7 @@ public class UnifiedTimeSeriesService {
      * <b>不回落</b>到其它源、也不再挨个源试。</p>
      */
     public UnifiedTimeSeriesResponse querySingleTimeSeries(UnifiedTimeSeriesRequest request) {
-        String sortieKey = request.getSortieId() == null ? null : request.getSortieId().trim();
+        String sortieKey = request.resolveSortieKey();
         String paralistDesc = request.getParalist() == null ? "-" : String.join(",", request.getParalist());
         log.info("时序查询: sortieId={}, paralist={}, samplingRate={}",
                 sortieKey, paralistDesc, request.samplingRateOrDefault());
@@ -178,23 +178,30 @@ public class UnifiedTimeSeriesService {
     // ==================== 航新 ====================
 
     /**
-     * 航新时序查询：先用机号 / 架次号查架次接口拿 sortieId 与起止时间，再查时序接口。
+     * 航新时序查询：优先使用 /aircraft/sorties 返回后缓存的架次 ID 与起止时间。
      *
      * <p>架次接口未命中时无法定位架次，直接跳过（不发起时序查询）。</p>
      */
     private UnifiedTimeSeriesResponse queryHangxinSingle(UnifiedTimeSeriesRequest request,
                                                          PlatformRouteService.SortieRef ref) {
         try {
-            ExternalSortieData sortie = findSortie(hangxinClient, ref, "航新");
-            if (sortie == null) {
+            boolean needSortie = ref.getSortieKey() == null
+                    || (request.getStartTime() == null && ref.getStartTime() == null)
+                    || (request.getEndTime() == null && ref.getEndTime() == null);
+            ExternalSortieData sortie = findSortieIfNeeded(hangxinClient, ref, "航新", needSortie);
+            String sortieId = firstNonEmpty(ref.getSortieKey(),
+                    sortie == null ? null : sortie.getId());
+            if (sortieId == null) {
                 log.info("航新未查到该架次，跳过失时序查询");
                 return null;
             }
 
             Map<String, Object> params = new HashMap<>();
-            putIfNotNull(params, "sortieId", sortie.getId());
-            putIfNotNull(params, "startTimestamp", resolveTime(request.getStartTime(), sortie.getStartTime()));
-            putIfNotNull(params, "endTimestamp", resolveTime(request.getEndTime(), sortie.getEndTime()));
+            putIfNotNull(params, "sortieId", sortieId);
+            putIfNotNull(params, "startTimestamp", resolveTime(request.getStartTime(),
+                    firstNonEmpty(ref.getStartTime(), sortie == null ? null : sortie.getStartTime())));
+            putIfNotNull(params, "endTimestamp", resolveTime(request.getEndTime(),
+                    firstNonEmpty(ref.getEndTime(), sortie == null ? null : sortie.getEndTime())));
             params.put("samplingRate", request.samplingRateOrDefault());
             if (request.getParalist() != null && !request.getParalist().isEmpty()) {
                 params.put("parameters", request.getParalist());
@@ -211,14 +218,16 @@ public class UnifiedTimeSeriesService {
     // ==================== 633 ====================
 
     /**
-     * 633 时序查询：startTime / endTime 同样取自三方架次接口（命中时），其余参数直接透传。
+     * 633 时序查询：startTime / endTime 优先取 /aircraft/sorties 缓存的架次时间。
      *
      * <p>633 不接受 samplingRate，也不使用 sortieId（用 airplaneNum + flightNum 定位架次）。</p>
      */
     private UnifiedTimeSeriesResponse querySanSanSingle(UnifiedTimeSeriesRequest request,
                                                         PlatformRouteService.SortieRef ref) {
         try {
-            ExternalSortieData sortie = findSortie(sanSanClient, ref, "633");
+            boolean needSortie = (request.getStartTime() == null && ref.getStartTime() == null)
+                    || (request.getEndTime() == null && ref.getEndTime() == null);
+            ExternalSortieData sortie = findSortieIfNeeded(sanSanClient, ref, "633", needSortie);
 
             Map<String, Object> params = new HashMap<>();
             // airplaneType 优先用索引里记下的真实值 —— 请求体里那个可能是 K4-WS19:6 合成码，
@@ -231,9 +240,9 @@ public class UnifiedTimeSeriesService {
                 params.put("Paralist", request.getParalist());
             }
             String startTime = resolveTime(request.getStartTime(),
-                    sortie == null ? null : sortie.getStartTime());
+                    firstNonEmpty(ref.getStartTime(), sortie == null ? null : sortie.getStartTime()));
             String endTime = resolveTime(request.getEndTime(),
-                    sortie == null ? null : sortie.getEndTime());
+                    firstNonEmpty(ref.getEndTime(), sortie == null ? null : sortie.getEndTime()));
             putIfNotNull(params, "startTime", startTime);
             putIfNotNull(params, "endTime", endTime);
 
@@ -253,6 +262,18 @@ public class UnifiedTimeSeriesService {
      */
     private ExternalSortieData findSortie(BaseExternalClient client,
                                           PlatformRouteService.SortieRef ref, String label) {
+        return findSortieIfNeeded(client, ref, label, true);
+    }
+
+    /**
+     * 索引里已有完整架次信息时直接复用；只有旧版废弃接口构造的临时引用缺字段时才回查。
+     */
+    private ExternalSortieData findSortieIfNeeded(BaseExternalClient client,
+                                                  PlatformRouteService.SortieRef ref,
+                                                  String label, boolean needed) {
+        if (!needed) {
+            return null;
+        }
         Map<String, Object> params = new HashMap<>();
         putIfNotNull(params, "airplaneNum", ref.getAirplaneNum());
         putIfNotNull(params, "flightNum", ref.getFlightNum());
@@ -418,7 +439,7 @@ public class UnifiedTimeSeriesService {
     /** 本地分支：按 sortieId 定位关联的 csv 表 */
     private CompletableFuture<SourceRawResult> queryLocalSafe(UnifiedTimeSeriesRequest request) {
         return CompletableFuture.supplyAsync(() -> {
-            Long sortieId = parseLocalSortieId(request.getSortieId());
+            Long sortieId = parseLocalSortieId(request.resolveSortieKey());
             if (sortieId == null) {
                 return new SourceRawResult(null, "未提供本地架次ID");
             }
@@ -449,9 +470,11 @@ public class UnifiedTimeSeriesService {
      */
     private PlatformRouteService.SortieRef requestRef(UnifiedTimeSeriesRequest request, DataSource source) {
         return PlatformRouteService.SortieRef.external(source,
+                null,
                 resolveExternalAirplaneType(request.getAirplaneType()),
                 request.getAircraftNumber(),
-                request.getSortieId());
+                request.resolveSortieKey(),
+                null, null, null);
     }
 
     private static class SourceRawResult {

@@ -31,7 +31,7 @@ import java.util.stream.Collectors;
  * 数据流向：
  *   CSV文件 → 达梦数据库 csv_xxx 表
  *   列属性分析 → CsvColumnAnalyzer → 自动保存列类型元数据
- *   飞机构型关联 → 保存 tail_number 元数据 + config_data_mapping
+ *   本地架次绑定 → 保存 tail_number 元数据 + config_data_mapping（架次与表一对一）
  */
 @Service
 public class CsvService {
@@ -60,34 +60,25 @@ public class CsvService {
     }
 
     /**
-     * 上传CSV文件并入库（默认不带飞机构型关联）
-     */
-    public Map<String, Object> uploadCsv(MultipartFile file, String tableName) throws Exception {
-        return uploadCsv(file, tableName, null, null);
-    }
-
-    /**
-     * 上传CSV文件并入库（含飞机构型 + 架次关联）
+     * 上传CSV文件并入库，同时绑定到一个本地架次。
      *
      * @param file         CSV文件
      * @param tableName    达梦表名（需以 csv_ 开头）
-     * @param parentItemId 父级构型项目ID（可选）
-     * @param sortieId     架次ID（可选，提供后自动从架次获取机号）
+     * @param sortieId     本地架次ID（必填）
      * @return 处理结果
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String tableName,
-                                          Long parentItemId, Long sortieId) throws Exception {
+                                          Long sortieId) throws Exception {
         long startTime = System.currentTimeMillis();
 
-        // 从架次自动解析机号
-        String aircraftNumber = null;
-        if (sortieId != null) {
-            Sortie sortie = aircraftConfigService.getSortie(sortieId);
-            if (sortie == null) {
-                throw new IllegalArgumentException("架次不存在: " + sortieId);
-            }
-            aircraftNumber = sortie.getAircraftNumber();
+        if (sortieId == null) {
+            throw new IllegalArgumentException("sortieId 不能为空");
         }
+        Sortie sortie = aircraftConfigService.getSortie(sortieId);
+        if (sortie == null) {
+            throw new IllegalArgumentException("本地架次不存在: " + sortieId);
+        }
+        String aircraftNumber = sortie.getAircraftNumber();
 
         // 验证表名
         if (!CsvUtils.isValidTableName(tableName)) {
@@ -171,16 +162,19 @@ public class CsvService {
         // 8. 存储阶段校验
         Map<String, Object> storageValidation = validationUtils.validateStorage(expectedRows, successCount);
 
-        // 9. 创建构型数据关联
-        if ((aircraftNumber != null && !aircraftNumber.trim().isEmpty()) || parentItemId != null) {
+        // 9. 建立本地架次与 CSV 表的一对一绑定
+        try {
+            aircraftConfigService.createDataMapping(
+                    sortieId, deviceName,
+                    new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date()));
+        } catch (RuntimeException e) {
             try {
-                aircraftConfigService.createDataMapping(
-                    aircraftNumber, parentItemId, sortieId, deviceName,
-                    new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(new Date())
-                );
-            } catch (Exception e) {
-                log.warn("创建数据关联失败: {}", e.getMessage());
+                dbUtils.dropTable(tableName);
+                dbUtils.deleteTableMetadata(tableName);
+            } catch (Exception cleanupError) {
+                log.warn("回滚CSV表失败: {}", cleanupError.getMessage());
             }
+            throw e;
         }
 
         long elapsed = System.currentTimeMillis() - startTime;
@@ -191,6 +185,7 @@ public class CsvService {
         result.put("tableName", tableName);
         result.put("deviceName", deviceName);
         result.put("aircraftNumber", aircraftNumber);
+        result.put("sortieId", sortieId);
         result.put("totalCount", expectedRows);
         result.put("successCount", successCount);
         result.put("failureCount", failureCount);

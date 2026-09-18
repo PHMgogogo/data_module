@@ -95,7 +95,6 @@ public class SchemaInitializer {
         String sql = "CREATE TABLE IF NOT EXISTS config_data_mapping ("
                 + "mapping_id INT IDENTITY(1,1) NOT NULL, "
                 + "aircraft_number VARCHAR(20), "
-                + "item_id INT, "
                 + "sortie_id INT, "
                 + "csv_table_name VARCHAR(200), "
                 + "data_type VARCHAR(50) DEFAULT 'RAW', "
@@ -104,7 +103,22 @@ public class SchemaInitializer {
                 + "PRIMARY KEY (mapping_id)"
                 + ")";
         jdbcTemplate.execute(sql);
+        // 本地架次与 CSV 表严格一对一。已有历史重复数据时索引创建失败，不影响应用启动。
+        createUniqueIndexQuietly("uk_cdm_sortie",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uk_cdm_sortie "
+                        + "ON config_data_mapping(sortie_id)");
+        createUniqueIndexQuietly("uk_cdm_table",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uk_cdm_table "
+                        + "ON config_data_mapping(csv_table_name)");
         log.info("表 config_data_mapping 已就绪");
+    }
+
+    private void createUniqueIndexQuietly(String name, String sql) {
+        try {
+            jdbcTemplate.execute(sql);
+        } catch (Exception e) {
+            log.warn("唯一索引 {} 创建失败，请检查历史重复数据: {}", name, e.getMessage());
+        }
     }
 
     /**

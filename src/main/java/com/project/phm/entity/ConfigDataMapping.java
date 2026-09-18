@@ -5,9 +5,9 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 
 /**
- * 构型与CSV数据关联表 — 将上传的csv_xxx数据关联到指定飞机构型和构型项目
+ * CSV 数据关联表 — 将上传的 csv_xxx 表绑定到本地架次。
  *
- * 诊断/评价/预测信息通过此关联追溯到对应的飞机构型上下文
+ * <p>一个本地架次只能绑定一张 CSV 表，一张 CSV 表也只能绑定一个本地架次。</p>
  */
 @TableName("config_data_mapping")
 public class ConfigDataMapping {
@@ -15,8 +15,7 @@ public class ConfigDataMapping {
     @TableId(type = IdType.AUTO)
     private Long mappingId;         // PK, 自增
     private String aircraftNumber;
-    private Long itemId;            // 构型项目 → ConfigItem
-    private Long sortieId;          // 架次ID → Sortie（可选，为空表示旧数据）
+    private Long sortieId;          // 本地架次ID → Sortie
     private String csvTableName;    // 关联的 csv_xxx 表名
     private String dataTime;        // 数据时间
     private String createdAt;       // 创建时间
@@ -35,14 +34,6 @@ public class ConfigDataMapping {
 
     public void setAircraftNumber(String aircraftNumber) {
         this.aircraftNumber = aircraftNumber;
-    }
-
-    public Long getItemId() {
-        return itemId;
-    }
-
-    public void setItemId(Long itemId) {
-        this.itemId = itemId;
     }
 
     public Long getSortieId() {

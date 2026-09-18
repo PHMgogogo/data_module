@@ -118,7 +118,7 @@ public class CsvController {
                     "- 自动建表（如不存在）\n" +
                     "- 计算原始数据的SHA-256哈希（用于后续导出一致性校验）\n" +
                     "- 保存到元数据表 csv_table_metadata\n" +
-                    "- 绑定到架次（通过架次自动关联到对应单机 + 构型项目）\n\n" +
+                    "- 绑定到本地架次；一个架次只能绑定一张表，一张表只能绑定一个架次\n\n" +
                     "**注意**：表名会自动加 `csv_` 前缀（如传 `engine` 会变成 `csv_engine`）\n" +
                     "**注意**：如果表名已存在，会报错防止重复上传")
     @Tag(name = "05-CSV数据管理")
@@ -126,14 +126,14 @@ public class CsvController {
     public ResponseEntity<?> uploadCsv(
             @Parameter(description = "CSV文件", required = true) @RequestParam("file") MultipartFile file,
             @Parameter(description = "表名（会自动加csv_前缀）", required = true, example = "engine_vibration") @RequestParam("tableName") String tableName,
-            @Parameter(description = "构型项目ID（可选）", example = "3") @RequestParam(value = "parentItemId", required = false) Long parentItemId,
-            @Parameter(description = "架次ID（通过架次关联单机）", example = "1") @RequestParam(value = "sortieId", required = false) Long sortieId) {
+            @Parameter(description = "本地架次ID", example = "1", required = true)
+            @RequestParam(value = "sortieId") Long sortieId) {
         try {
             // 确保表名以 csv_ 开头
             String fullTableName = tableName.toLowerCase().startsWith("csv_") ? tableName : "csv_" + tableName;
 
             Map<String, Object> result = csvService.uploadCsv(
-                    file, fullTableName, parentItemId, sortieId);
+                    file, fullTableName, sortieId);
 
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
@@ -544,13 +544,14 @@ public class CsvController {
     /**
      * 时序数据查询（按架次定向到本地 / 航新 / 633 中的一家）
      *
-     * <p>只认一个 {@code sortieId}，它就是 {@code GET /aircraft/sorties} 下发的 {@code sortieKey}：
+     * <p>推荐直接回传 {@code GET /aircraft/sorties} 下发的 {@code sortieKey}，也兼容旧字段
+     * {@code sortieId}：
      * 后端在内存的平台路由索引里查出该架次归属哪个平台，然后只向那<b>一个</b>平台发请求。
      * 本地走 config_data_mapping 关联的 csv_xxx 表；三方先查架次接口拿起止时间
      * （转成 ISO 形式）再查时序接口。</p>
      *
      * <p>索引未命中（id 不存在 / 应用刚启动还没建过索引）时返回空结构并记 warn 日志，
-     * 不回落其它源 —— 索引由 {@code GET /aircraft/models} 建立。</p>
+     * 不回落其它源 —— 架次关系由对应机号的 {@code GET /aircraft/sorties} 增量建立。</p>
      *
      * <p><b>请求示例：</b></p>
      * <pre>{@code
@@ -581,12 +582,15 @@ public class CsvController {
      */
     @Operation(summary = "时序数据查询（按架次定向到唯一平台）",
             description = "返回统一格式 `data.timestamps` + `data.parameters[{name, values}]`。\n\n" +
-                    "**定位规则**：只认 `sortieId` —— 取 `GET /aircraft/sorties` 返回的 `sortieKey`" +
-                    "（本地行是数字主键的字符串，三方行是平台原始 id）。后端据此在内存路由索引里" +
+                    "**定位规则**：推荐使用 `sortieKey`，为兼容旧前端也接受 `sortieId`。" +
+                    "取 `GET /aircraft/sorties` 返回的 `sortieKey`（本地行是数字主键的字符串，" +
+                    "三方行是平台原始 id）。后端据此在内存路由索引里" +
                     "确定该架次归属本地 / 航新 / 633，**只向那一个平台发请求**。\n" +
                     "**未命中**：`sortieId` 不在索引里（id 不存在，或应用刚启动还没建过索引）时返回空的" +
-                    " timestamps / parameters 并记 warn 日志，不会回落其它源。索引由 `GET /aircraft/models` 建立。\n" +
-                    "**时间**：`startTime` / `endTime` 可选 —— 传了以传入值为准；不传则由后端先查三方架次接口取起止时间。" +
+                    " timestamps / parameters 并记 warn 日志，不会回落其它源。请先调用 `GET /aircraft/sorties` " +
+                    "加载该架次。\n" +
+                    "**时间**：`startTime` / `endTime` 可选 —— 传了以传入值为准；不传时优先使用 /aircraft/sorties " +
+                    "刷新时缓存的架次起止时间，缓存缺失才回查三方架次接口。" +
                     "两者最终都转成 `2026-07-23T10:30:00.000Z` 形式再传给三方时序接口。" +
                     "传入格式支持 `2026-07-23 10:30:00`（含小数秒）与 ISO 两种。\n" +
                     "**采样率**：`samplingRate` 不传默认 10。\n" +
@@ -599,7 +603,7 @@ public class CsvController {
         try {
             if (!request.hasSortieIdentifier()) {
                 return ResponseEntity.badRequest()
-                        .body(ApiResult.error(400, "请提供 sortieId（取自 /aircraft/sorties 的 sortieKey）"));
+                        .body(ApiResult.error(400, "请提供 sortieKey（取自 /aircraft/sorties 的 sortieKey）"));
             }
 
             UnifiedTimeSeriesResponse resp = timeSeriesService.querySingleTimeSeries(request);
