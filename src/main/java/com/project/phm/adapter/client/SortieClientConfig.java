@@ -31,12 +31,4 @@ public class SortieClientConfig {
                 .setReadTimeout(Duration.ofSeconds(10))
                 .build();
     }
-
-    @Bean
-    public RestTemplate supportRestTemplate(RestTemplateBuilder builder) {
-        return builder
-                .setConnectTimeout(Duration.ofSeconds(5))
-                .setReadTimeout(Duration.ofSeconds(10))
-                .build();
-    }
 }

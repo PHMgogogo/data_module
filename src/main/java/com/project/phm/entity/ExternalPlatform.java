@@ -46,15 +46,6 @@ public class ExternalPlatform {
     /** 航新服务：除构型外其它请求使用的端口 key */
     public static final String KEY_PORT1 = "port1";
 
-    /** 兼容旧表字段（platform_ip / port 列已废弃，不再读写） */
-    @Deprecated
-    @TableField(exist = false)
-    private String platformIp;
-
-    @Deprecated
-    @TableField(exist = false)
-    private Integer port;
-
     public Long getId() { return id; }
     public void setId(Long id) { this.id = id; }
     public String getPlatformName() { return platformName; }

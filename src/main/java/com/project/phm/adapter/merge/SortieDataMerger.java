@@ -9,41 +9,42 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 三方（航新、633、本地）架次数据拼接器。
+ * 架次统一响应转换器。
  *
- * <p>不做跨源去重合并，直接将各源数据全部放入结果列表，每条记录标记来源。</p>
+ * <p>架次查询按机型路由到唯一平台，一次只有一个来源，因此这里只做单源转换，
+ * 不做跨源拼接。</p>
  */
 @Component
 public class SortieDataMerger {
 
-    /**
-     * 将三个数据源的架次数据拼接为统一的响应列表（不做去重合并）。
-     */
-    public List<UnifiedSortieResponse> merge(
-            List<ExternalSortieData> hangxinList,
-            List<ExternalSortieData> sanSanList,
-            List<Sortie> localList) {
+    /** 航新架次行 → 统一响应 */
+    public List<UnifiedSortieResponse> fromHangxin(List<ExternalSortieData> list) {
+        return fromExternal(list, "hangxin");
+    }
 
+    /** 633 架次行 → 统一响应 */
+    public List<UnifiedSortieResponse> fromSanSan(List<ExternalSortieData> list) {
+        return fromExternal(list, "sansan");
+    }
+
+    /** 本地架次行 → 统一响应 */
+    public List<UnifiedSortieResponse> fromLocal(List<Sortie> list) {
         List<UnifiedSortieResponse> result = new ArrayList<>();
-
-        if (hangxinList != null) {
-            for (ExternalSortieData ext : hangxinList) {
-                result.add(UnifiedSortieResponse.fromExternal(ext, "hangxin"));
-            }
-        }
-
-        if (sanSanList != null) {
-            for (ExternalSortieData ext : sanSanList) {
-                result.add(UnifiedSortieResponse.fromExternal(ext, "sansan"));
-            }
-        }
-
-        if (localList != null) {
-            for (Sortie local : localList) {
+        if (list != null) {
+            for (Sortie local : list) {
                 result.add(UnifiedSortieResponse.fromLocal(local));
             }
         }
+        return result;
+    }
 
+    private List<UnifiedSortieResponse> fromExternal(List<ExternalSortieData> list, String source) {
+        List<UnifiedSortieResponse> result = new ArrayList<>();
+        if (list != null) {
+            for (ExternalSortieData ext : list) {
+                result.add(UnifiedSortieResponse.fromExternal(ext, source));
+            }
+        }
         return result;
     }
 }

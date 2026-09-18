@@ -4,7 +4,6 @@ import com.opencsv.CSVReader;
 import com.opencsv.CSVWriter;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse.ParameterEntry;
-import com.project.phm.entity.ConfigItem;
 import com.project.phm.entity.Sortie;
 import com.project.phm.utils.*;
 import com.project.phm.utils.CsvColumnAnalyzer.AnalysisResult;
@@ -16,8 +15,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.OutputStreamWriter;
-import java.nio.charset.StandardCharsets;
-import java.security.MessageDigest;
 import java.text.SimpleDateFormat;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -50,13 +47,6 @@ public class CsvService {
         this.validationUtils = validationUtils;
         this.columnAnalyzer = columnAnalyzer;
         this.aircraftConfigService = aircraftConfigService;
-    }
-
-    /**
-     * 获取所有CSV表
-     */
-    public List<String> getAllTables() {
-        return dbUtils.getAllCsvTables();
     }
 
     /**
@@ -278,29 +268,6 @@ public class CsvService {
     }
 
     /**
-     * 导出表数据并进行完整性校验
-     */
-    public Map<String, Object> exportCsvWithValidation(String tableName, List<String[]> originalData) {
-        List<String[]> exportedData = exportCsv(tableName);
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("exportedData", exportedData);
-
-        int expectedRows = originalData != null ? originalData.size() - 1 : dbUtils.getTotalCount(tableName);
-        int actualRows = exportedData.size() - 1;
-
-        if (originalData != null) {
-            Map<String, Object> validation = validationUtils.validateExportConsistency(originalData, exportedData);
-            result.put("validation", validation);
-        } else {
-            Map<String, Object> validation = validationUtils.validateExport(expectedRows, actualRows);
-            result.put("validation", validation);
-        }
-
-        return result;
-    }
-
-    /**
      * 将CSV数据写入输出流
      */
     public void writeCsvToStream(List<String[]> data, OutputStream outputStream) throws Exception {
@@ -406,7 +373,7 @@ public class CsvService {
             String type = columnTypes.getOrDefault(col, "TEXT");
             info.put("type", type);
             String role;
-            if (col.equalsIgnoreCase(timestampColumn) || IoTDbUtils.isTimestampColumn(col)) {
+            if (col.equalsIgnoreCase(timestampColumn) || CsvUtils.isTimestampColumn(col)) {
                 role = "time";
             } else if (numericCols.contains(col)) {
                 role = "measurement";
@@ -451,7 +418,7 @@ public class CsvService {
                 String timeCol = timestampColumn;
                 if (timeCol == null) {
                     for (String col : dataColumns) {
-                        if (IoTDbUtils.isTimestampColumn(col)) {
+                        if (CsvUtils.isTimestampColumn(col)) {
                             timeCol = col;
                             break;
                         }
@@ -751,7 +718,7 @@ public class CsvService {
 
         // 按常见命名匹配
         for (String col : allColumns) {
-            if (IoTDbUtils.isTimestampColumn(col) || "时间戳".equals(col)
+            if (CsvUtils.isTimestampColumn(col) || "时间戳".equals(col)
                     || "timestamp".equalsIgnoreCase(col)) {
                 return col;
             }

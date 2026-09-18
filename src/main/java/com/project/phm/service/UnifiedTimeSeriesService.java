@@ -5,10 +5,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.phm.adapter.client.BaseExternalClient;
 import com.project.phm.adapter.client.HangxinSortieClient;
 import com.project.phm.adapter.client.SanSanSortieClient;
-import com.project.phm.adapter.dto.ApiResult;
 import com.project.phm.adapter.dto.DataSource;
 import com.project.phm.adapter.dto.ExternalSortieData;
-import com.project.phm.adapter.dto.SourceInfo;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesRequest;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesResponse;
 import com.project.phm.entity.ConfigDataMapping;
@@ -26,7 +24,6 @@ import java.time.format.DateTimeFormatterBuilder;
 import java.time.format.DateTimeParseException;
 import java.time.temporal.ChronoField;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 
 /**
  * 时序数据查询编排服务。
@@ -49,7 +46,6 @@ import java.util.concurrent.CompletableFuture;
 public class UnifiedTimeSeriesService {
 
     private static final Logger log = LoggerFactory.getLogger(UnifiedTimeSeriesService.class);
-    private static final String SUCCESS = "success";
     private static final String TS_PATH = "/processing/data/querySorties";
 
     /** 三方时序接口要求的时间格式（北京时间，东八区） */
@@ -93,48 +89,53 @@ public class UnifiedTimeSeriesService {
     // ==================== 新接口：只返回有数据的那个源 ====================
 
     /**
-     * 查询时序数据：按架次标识定向到唯一归属平台，只向那一个平台发请求。
+     * 查询时序数据：按请求里的机型路由到唯一归属平台，只向那一个平台发请求。
      *
-     * <p>路由依据是请求里的 {@code sortieKey}（兼容旧字段 {@code sortieId}）——
-     * 它在平台路由索引里对应一个 {@link PlatformRouteService.SortieRef}，里面记着该架次
-     * 属于本地 / 航新 / 633，以及构造对应请求所需的全部标识。</p>
+     * <p>路由依据是请求里的 {@code airplaneType}（机型）—— 在 {@code PlatformRouteService}
+     * 的机型 → 平台映射里解析归属。未命中路由、或命中的平台当前不可达（保活失败）时回落本地：
+     * 用请求里的 {@code sortieId} 兜底按本地架次查。</p>
      *
-     * <p>未命中索引（id 不存在、或应用刚启动还没建过索引）时返回空结构并告警，
-     * <b>不回落</b>到其它源、也不再挨个源试。</p>
+     * <p>命中三方时，架次的定位信息（sortieKey / 机号 / 起止时间）优先取路由索引，
+     * 索引缺失的项才回落到请求体。</p>
      */
     public UnifiedTimeSeriesResponse querySingleTimeSeries(UnifiedTimeSeriesRequest request) {
+        String modelKey = request.getAirplaneType() == null ? null : request.getAirplaneType().trim();
+        if (modelKey == null || modelKey.isEmpty()) {
+            throw new IllegalArgumentException("机型不能为空");
+        }
         String sortieKey = request.resolveSortieKey();
         String paralistDesc = request.getParalist() == null ? "-" : String.join(",", request.getParalist());
-        log.info("时序查询: sortieId={}, paralist={}, samplingRate={}",
-                sortieKey, paralistDesc, request.samplingRateOrDefault());
+        log.info("时序查询: 机型={}, sortieId={}, paralist={}, samplingRate={}",
+                modelKey, sortieKey, paralistDesc, request.samplingRateOrDefault());
+
+        DataSource source = routeService.resolveModel(modelKey);
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，时序查询回落本地", modelKey);
+            }
+            Long localSortieId = parseLocalSortieId(sortieKey);
+            return orEmpty(queryLocalBySortie(localSortieId, request.getParalist()));
+        }
 
         if (sortieKey == null || sortieKey.isEmpty()) {
-            log.warn("时序查询未提供 sortieId，无法定位平台，返回空");
+            log.warn("时序查询未提供 sortieKey，无法定位三方架次，返回空");
             return UnifiedTimeSeriesResponse.empty();
         }
-
         PlatformRouteService.SortieRef ref = routeService.resolveSortie(sortieKey);
-        if (ref == null) {
-            log.warn("架次 {} 不在平台路由索引中，返回空（不回落其它源）。"
-                            + "若这是新导入的架次或应用刚启动，先调用 /aircraft/models 刷新索引",
-                    sortieKey);
+        if (ref == null || ref.getSource() != source) {
+            log.warn("架次 {} 未命中 {} 的架次路由，返回空", sortieKey, source.getLabel());
             return UnifiedTimeSeriesResponse.empty();
         }
 
-        UnifiedTimeSeriesResponse resp;
-        switch (ref.getSource()) {
-            case LOCAL:
-                resp = queryLocalBySortie(ref.getLocalSortieId(), request.getParalist());
-                break;
-            case HANGXIN:
-                resp = queryHangxinSingle(request, ref);
-                break;
-            default:
-                resp = querySanSanSingle(request, ref);
-                break;
-        }
+        UnifiedTimeSeriesResponse resp = source == DataSource.HANGXIN
+                ? queryHangxinSingle(request, ref)
+                : querySanSanSingle(request, ref);
+        log.info("时序查询结果: 平台={}, {}", source.getLabel(), desc(resp));
+        return resp == null ? UnifiedTimeSeriesResponse.empty() : resp;
+    }
 
-        log.info("时序查询结果: 平台={}, {}", ref.getSource().getLabel(), desc(resp));
+    /** 查询结果为空时统一返回空结构 */
+    private static UnifiedTimeSeriesResponse orEmpty(UnifiedTimeSeriesResponse resp) {
         return resp == null ? UnifiedTimeSeriesResponse.empty() : resp;
     }
 
@@ -255,18 +256,7 @@ public class UnifiedTimeSeriesService {
     }
 
     /**
-     * 按索引里记下的机号 + 架次号查三方架次接口，取第一条命中记录（失败时返回 null）。
-     *
-     * <p>用索引里的值而不是请求体里的，是因为请求体只保证有架次标识；
-     * 机号 / 架次号这两个三方接口的过滤参数，索引在建立时就已经拿到了。</p>
-     */
-    private ExternalSortieData findSortie(BaseExternalClient client,
-                                          PlatformRouteService.SortieRef ref, String label) {
-        return findSortieIfNeeded(client, ref, label, true);
-    }
-
-    /**
-     * 索引里已有完整架次信息时直接复用；只有旧版废弃接口构造的临时引用缺字段时才回查。
+     * 索引里已有完整架次信息时直接复用，缺字段时才回查三方架次接口。
      */
     private ExternalSortieData findSortieIfNeeded(BaseExternalClient client,
                                                   PlatformRouteService.SortieRef ref,
@@ -397,93 +387,5 @@ public class UnifiedTimeSeriesService {
             return first;
         }
         return (second != null && !second.trim().isEmpty()) ? second : null;
-    }
-
-    // ==================== 旧接口（/unified/timeseries/query，已废弃） ====================
-
-    /**
-     * 查询三个数据源的时序数据。
-     *
-     * <p>data 列表结构：[本地, 633, 航新]，各源无数据时不出现在列表中。</p>
-     *
-     * @deprecated 改用 {@link #querySingleTimeSeries}（对外接口 {@code POST /csv/query-timeseries}），
-     *             只返回实际有数据的那个源。
-     */
-    @Deprecated
-    public ApiResult<List<Object>> queryTimeSeries(UnifiedTimeSeriesRequest request) {
-        CompletableFuture<SourceRawResult> localFuture    = queryLocalSafe(request);
-        CompletableFuture<SourceRawResult> sanSanFuture   = querySanSanSafe(request);
-        CompletableFuture<SourceRawResult> hangxinFuture  = queryHangxinSafe(request);
-
-        CompletableFuture.allOf(localFuture, sanSanFuture, hangxinFuture).join();
-
-        SourceRawResult local   = localFuture.join();
-        SourceRawResult sanSan  = sanSanFuture.join();
-        SourceRawResult hangxin = hangxinFuture.join();
-
-        log.info("时序查询完成: 本地={}, 633={}, 航新={}",
-                local.message, sanSan.message, hangxin.message);
-
-        List<Object> dataList = new ArrayList<>();
-        if (local.data != null)   dataList.add(local.data);
-        if (sanSan.data != null)  dataList.add(sanSan.data);
-        if (hangxin.data != null) dataList.add(hangxin.data);
-
-        ApiResult<List<Object>> result = ApiResult.success(dataList);
-        result.setLocal(new SourceInfo(local.data != null ? 1 : 0, local.message));
-        result.setSansan(new SourceInfo(sanSan.data != null ? 1 : 0, sanSan.message));
-        result.setHangxin(new SourceInfo(hangxin.data != null ? 1 : 0, hangxin.message));
-        return result;
-    }
-
-    /** 本地分支：按 sortieId 定位关联的 csv 表 */
-    private CompletableFuture<SourceRawResult> queryLocalSafe(UnifiedTimeSeriesRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            Long sortieId = parseLocalSortieId(request.resolveSortieKey());
-            if (sortieId == null) {
-                return new SourceRawResult(null, "未提供本地架次ID");
-            }
-            UnifiedTimeSeriesResponse resp = queryLocalBySortie(sortieId, request.getParalist());
-            return resp == null
-                    ? new SourceRawResult(null, "本地未找到该架次关联的数据表")
-                    : new SourceRawResult(resp, SUCCESS);
-        });
-    }
-
-    private CompletableFuture<SourceRawResult> querySanSanSafe(UnifiedTimeSeriesRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            UnifiedTimeSeriesResponse resp = querySanSanSingle(request, requestRef(request, DataSource.SAN_SAN));
-            return new SourceRawResult(resp, resp != null ? SUCCESS : "633未返回数据");
-        });
-    }
-
-    private CompletableFuture<SourceRawResult> queryHangxinSafe(UnifiedTimeSeriesRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            UnifiedTimeSeriesResponse resp = queryHangxinSingle(request, requestRef(request, DataSource.HANGXIN));
-            return new SourceRawResult(resp, resp != null ? SUCCESS : "航新未返回数据");
-        });
-    }
-
-    /**
-     * 废弃接口没有索引可查（它本来就是「三个源都试一遍」的设计），就地用请求体字段捏一个引用。
-     * 合并后的统一标识在这里当作三方的 flightNum 用。
-     */
-    private PlatformRouteService.SortieRef requestRef(UnifiedTimeSeriesRequest request, DataSource source) {
-        return PlatformRouteService.SortieRef.external(source,
-                null,
-                resolveExternalAirplaneType(request.getAirplaneType()),
-                request.getAircraftNumber(),
-                request.resolveSortieKey(),
-                null, null, null);
-    }
-
-    private static class SourceRawResult {
-        final Object data;
-        final String message;
-
-        SourceRawResult(Object data, String message) {
-            this.data = data;
-            this.message = message;
-        }
     }
 }

@@ -15,10 +15,10 @@ import java.util.List;
  * <p>因此请求体里<b>没有</b>独立的「架次号」字段：以前靠 {@code aircraftNumber + sortieNumber}
  * 让后端挨个源试的路子，在定向模式下已经不需要了。</p>
  *
- * <p>{@code aircraftNumber} / {@code airplaneType} 保留为可选补充：正常情况下后端用索引里
- * 随架次一起记下来的值构造三方请求，只有在索引缺少该项时才回落到请求体。</p>
+ * <p>{@code airplaneType}（机型）<b>必填</b>：它是路由到唯一平台的唯一依据。后端用它在
+ * 机型 → 平台映射里解析归属，未命中或该平台不可达时回落本地。</p>
  *
- * <p>startTime / endTime 可选：不传时优先使用 /aircraft/models 缓存的架次时间，
+ * <p>startTime / endTime 可选：不传时优先使用路由索引缓存的架次时间，
  * 缓存缺失才查询三方架次接口，
  * 传了则以传入值为准（两种格式都接受，最终统一转成 ISO 再发给三方时序接口）。</p>
  */
@@ -33,8 +33,8 @@ public class UnifiedTimeSeriesRequest {
     @Schema(description = "机号（可选，仅当路由索引缺少该架次的机号时作为补充）", example = "0003")
     private String aircraftNumber;
 
-    @Schema(description = "机型（可选，仅当路由索引缺少该架次真实的 airplaneType 时作为补充）",
-            example = "K4-WS19")
+    @Schema(description = "机型（必填），后端据此路由到唯一平台",
+            example = "K4-WS19", requiredMode = Schema.RequiredMode.REQUIRED)
     private String airplaneType;
 
     @Schema(description = "开始时间（可选，不传则查三方架次接口推算）",

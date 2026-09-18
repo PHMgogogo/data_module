@@ -1,5 +1,6 @@
 package com.project.phm.service;
 
+import com.project.phm.adapter.client.BaseExternalClient;
 import com.project.phm.adapter.client.HangxinSortieClient;
 import com.project.phm.adapter.client.SanSanSortieClient;
 import com.project.phm.adapter.dto.*;
@@ -12,13 +13,13 @@ import org.springframework.stereotype.Service;
 
 import java.util.Collections;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
+import java.util.Map;
 
 /**
  * 统一架次查询编排服务。
  *
- * <p>并发调用三个数据源（航新、633、本地），合并结果后返回统一的响应。
- * 任一数据源失败不影响其他数据源，失败原因记入对应 SourceInfo.message。</p>
+ * <p>按请求里的机型路由到唯一数据源（本地 / 航新 / 633）：命中三方只查那一个平台，
+ * 未命中路由或命中平台不可达（保活失败）时回落本地。不再并发扫描三个源。</p>
  */
 @Service
 public class UnifiedSortieService {
@@ -30,146 +31,103 @@ public class UnifiedSortieService {
     private final SanSanSortieClient sanSanClient;
     private final SortieMapper sortieMapper;
     private final SortieDataMerger merger;
+    private final PlatformRouteService routeService;
 
     public UnifiedSortieService(HangxinSortieClient hangxinClient,
                                 SanSanSortieClient sanSanClient,
                                 SortieMapper sortieMapper,
-                                SortieDataMerger merger) {
+                                SortieDataMerger merger,
+                                PlatformRouteService routeService) {
         this.hangxinClient = hangxinClient;
         this.sanSanClient = sanSanClient;
         this.sortieMapper = sortieMapper;
         this.merger = merger;
+        this.routeService = routeService;
     }
 
     /**
-     * 查询并合并三个数据源的架次数据，返回包含数据和各来源元数据的响应。
+     * 按机型路由查询架次，返回统一响应。
+     *
+     * <p>机型为路由唯一依据：命中三方则只向该平台发一次请求，否则查本地表。</p>
      */
-    public ApiResult<List<UnifiedSortieResponse>> querySorties(UnifiedSortieRequest request) {
-        // 并发调用三个数据源
-        CompletableFuture<List<ExternalSortieData>> hangxinFuture = queryHangxinAsync(request);
-        CompletableFuture<List<ExternalSortieData>> sanSanFuture  = querySanSanAsync(request);
-        CompletableFuture<List<Sortie>> localFuture = queryLocalAsync(request);
+    public ApiResult<List<UnifiedSortieResponse>> querySortiesSafe(UnifiedSortieRequest request) {
+        String modelKey = requireModel(request.getAirplaneType());
+        DataSource source = routeService.resolveModel(modelKey);
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，按本地查询架次", modelKey);
+            }
+            return localResult(request);
+        }
+        return externalResult(request, source);
+    }
 
-        CompletableFuture.allOf(hangxinFuture, sanSanFuture, localFuture).join();
-
-        List<ExternalSortieData> hangxinData = hangxinFuture.join();
-        List<ExternalSortieData> sanSanData  = sanSanFuture.join();
-        List<Sortie> localData = localFuture.join();
-
-        // 合并数据
-        List<UnifiedSortieResponse> merged = merger.merge(hangxinData, sanSanData, localData);
-
-        // 构造响应
+    /** 本地分支：查本地 sortie 表 */
+    private ApiResult<List<UnifiedSortieResponse>> localResult(UnifiedSortieRequest request) {
+        List<Sortie> localData;
+        try {
+            localData = sortieMapper.selectList(request.toLocalQuery());
+        } catch (Exception e) {
+            log.warn("本地查询失败: {}", e.getMessage());
+            localData = Collections.emptyList();
+        }
+        List<UnifiedSortieResponse> merged = merger.fromLocal(localData);
         ApiResult<List<UnifiedSortieResponse>> result = ApiResult.success(merged);
-        result.setHangxin(new SourceInfo(hangxinData.size(), SUCCESS));
-        result.setSansan(new SourceInfo(sanSanData.size(), SUCCESS));
         result.setLocal(new SourceInfo(localData.size(), SUCCESS));
         return result;
     }
 
-    /**
-     * 查询并合并三个数据源的架次数据（带异常捕获），
-     * 异常时失败源的 data 为空列表，message 记录原因。
-     */
-    public ApiResult<List<UnifiedSortieResponse>> querySortiesSafe(UnifiedSortieRequest request) {
-        // 并发调用，各自捕获异常
-        CompletableFuture<SourceResult<ExternalSortieData>> hangxinFuture = queryHangxinSafe(request);
-        CompletableFuture<SourceResult<ExternalSortieData>> sanSanFuture  = querySanSanSafe(request);
-        CompletableFuture<SourceResult<Sortie>> localFuture = queryLocalSafe(request);
-
-        CompletableFuture.allOf(hangxinFuture, sanSanFuture, localFuture).join();
-
-        SourceResult<ExternalSortieData> hangxin = hangxinFuture.join();
-        SourceResult<ExternalSortieData> sanSan  = sanSanFuture.join();
-        SourceResult<Sortie> local = localFuture.join();
-
-        log.info("三方数据查询完成: 航新={}({}), 633={}({}), 本地={}({})",
-                hangxin.total, hangxin.message,
-                sanSan.total,  sanSan.message,
-                local.total,   local.message);
-
-        // 合并数据
-        List<UnifiedSortieResponse> merged = merger.merge(
-                hangxin.data, sanSan.data, local.data);
-
-        // 构造响应
+    /** 三方分支：只向命中的那一个平台发请求 */
+    private ApiResult<List<UnifiedSortieResponse>> externalResult(UnifiedSortieRequest request,
+                                                                 DataSource source) {
+        List<ExternalSortieData> data;
+        try {
+            data = clientFor(source).querySorties(paramsFor(request, source));
+        } catch (Exception e) {
+            log.warn("{}查询失败: {}", source.getLabel(), e.getMessage());
+            data = Collections.emptyList();
+        }
+        boolean hangxin = source == DataSource.HANGXIN;
+        List<UnifiedSortieResponse> merged = hangxin
+                ? merger.fromHangxin(data)
+                : merger.fromSanSan(data);
         ApiResult<List<UnifiedSortieResponse>> result = ApiResult.success(merged);
-        result.setHangxin(hangxin.toSourceInfo());
-        result.setSansan(sanSan.toSourceInfo());
-        result.setLocal(local.toSourceInfo());
+        SourceInfo info = new SourceInfo(data.size(), SUCCESS);
+        if (hangxin) {
+            result.setHangxin(info);
+        } else {
+            result.setSansan(info);
+        }
         return result;
     }
 
-    // ==================== 安全查询（带异常捕获） ====================
-
-    private CompletableFuture<SourceResult<ExternalSortieData>> queryHangxinSafe(UnifiedSortieRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                List<ExternalSortieData> list = hangxinClient.querySorties(request.toHangxinParams());
-                return new SourceResult<>(list, list.size(), SUCCESS);
-            } catch (Exception e) {
-                log.warn("航新查询失败: {}", e.getMessage());
-                return new SourceResult<>(Collections.emptyList(), 0, "航新查询失败: " + e.getMessage());
-            }
-        });
+    /** 请求参数还原成目标平台能认的形态：航新用 airplaneType，633 需要裸 airplaneType */
+    private Map<String, Object> paramsFor(UnifiedSortieRequest request, DataSource source) {
+        String realType = routeService.realAirplaneType(request.getAirplaneType());
+        String effective = realType != null ? realType : request.getAirplaneType();
+        UnifiedSortieRequest routed = new UnifiedSortieRequest();
+        routed.setAirplaneType(effective);
+        routed.setAirplaneNum(request.getAirplaneNum());
+        routed.setStartTime(request.getStartTime());
+        routed.setEndTime(request.getEndTime());
+        routed.setFlightNum(request.getFlightNum());
+        routed.setParaList(request.getParaList());
+        routed.setFileName(request.getFileName());
+        routed.setFileType(request.getFileType());
+        routed.setSortieId(request.getSortieId());
+        return source == DataSource.SAN_SAN ? routed.toSanSanParams() : routed.toHangxinParams();
     }
 
-    private CompletableFuture<SourceResult<ExternalSortieData>> querySanSanSafe(UnifiedSortieRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                List<ExternalSortieData> list = sanSanClient.querySorties(request.toSanSanParams());
-                return new SourceResult<>(list, list.size(), SUCCESS);
-            } catch (Exception e) {
-                log.warn("633查询失败: {}", e.getMessage());
-                return new SourceResult<>(Collections.emptyList(), 0, "633查询失败: " + e.getMessage());
-            }
-        });
+    private BaseExternalClient clientFor(DataSource source) {
+        return source == DataSource.SAN_SAN ? sanSanClient : hangxinClient;
     }
 
-    private CompletableFuture<SourceResult<Sortie>> queryLocalSafe(UnifiedSortieRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                List<Sortie> list = sortieMapper.selectList(request.toLocalQuery());
-                return new SourceResult<>(list, list.size(), SUCCESS);
-            } catch (Exception e) {
-                log.warn("本地查询失败: {}", e.getMessage());
-                return new SourceResult<>(Collections.emptyList(), 0, "本地查询失败: " + e.getMessage());
-            }
-        });
-    }
-
-    // ==================== 常规查询（无异常捕获、简洁） ====================
-
-    private CompletableFuture<List<ExternalSortieData>> queryHangxinAsync(UnifiedSortieRequest request) {
-        return CompletableFuture.supplyAsync(() ->
-                hangxinClient.querySorties(request.toHangxinParams()));
-    }
-
-    private CompletableFuture<List<ExternalSortieData>> querySanSanAsync(UnifiedSortieRequest request) {
-        return CompletableFuture.supplyAsync(() ->
-                sanSanClient.querySorties(request.toSanSanParams()));
-    }
-
-    private CompletableFuture<List<Sortie>> queryLocalAsync(UnifiedSortieRequest request) {
-        return CompletableFuture.supplyAsync(() ->
-                sortieMapper.selectList(request.toLocalQuery()));
-    }
-
-    // ==================== 泛型结果容器 ====================
-
-    private static class SourceResult<T> {
-        final List<T> data;
-        final int total;
-        final String message;
-
-        SourceResult(List<T> data, int total, String message) {
-            this.data = data;
-            this.total = total;
-            this.message = message;
+    /** 机型是路由的必要条件 */
+    private static String requireModel(String modelCode) {
+        String modelKey = modelCode == null ? null : modelCode.trim();
+        if (modelKey == null || modelKey.isEmpty()) {
+            throw new IllegalArgumentException("机型不能为空");
         }
-
-        SourceInfo toSourceInfo() {
-            return new SourceInfo(total, message);
-        }
+        return modelKey;
     }
 }

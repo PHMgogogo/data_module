@@ -1,28 +1,23 @@
 package com.project.phm.service;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.phm.adapter.dto.ApiResult;
+import com.project.phm.adapter.dto.DataSource;
 import com.project.phm.adapter.dto.SourceInfo;
 import com.project.phm.adapter.dto.UnifiedConfigRequest;
 import com.project.phm.adapter.dto.UnifiedConfigResponse;
 import com.project.phm.entity.ConfigItem;
-import com.project.phm.entity.ExternalPlatform;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
-import org.springframework.web.client.RestTemplate;
-import org.springframework.web.util.UriComponentsBuilder;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
  * 统一单机构型查询编排服务。
  *
- * <p>并发查询三个数据源，将各源结果全部放入列表（不做去重合并），每条记录标记来源。</p>
+ * <p>按请求里的机型路由到唯一数据源：命中三方只查那一个平台（并用该机型关联机号过滤 SSFJH），
+ * 未命中路由或平台不可达时回落本地构型。</p>
  */
 @Service
 public class UnifiedConfigItemService {
@@ -30,154 +25,62 @@ public class UnifiedConfigItemService {
     private static final Logger log = LoggerFactory.getLogger(UnifiedConfigItemService.class);
     private static final String SUCCESS = "success";
 
-    private final RestTemplate supportRestTemplate;
     private final AircraftConfigService aircraftConfigService;
-    private final PlatformConfigService platformConfigService;
-    private final ObjectMapper objectMapper;
-    private final String configPath;
+    private final PlatformRouteService routeService;
 
-    public UnifiedConfigItemService(RestTemplate supportRestTemplate,
-                                    AircraftConfigService aircraftConfigService,
-                                    PlatformConfigService platformConfigService,
-                                    ObjectMapper objectMapper,
-                                    @Value("${support-system.paths.getDzgxxx}") String configPath) {
-        this.supportRestTemplate = supportRestTemplate;
+    public UnifiedConfigItemService(AircraftConfigService aircraftConfigService,
+                                    PlatformRouteService routeService) {
         this.aircraftConfigService = aircraftConfigService;
-        this.platformConfigService = platformConfigService;
-        this.objectMapper = objectMapper;
-        this.configPath = configPath;
+        this.routeService = routeService;
     }
 
-    /** 来源名称 → 平台名称映射（兼容统一查询用的 sansan/hangxin 标识） */
-    private static String platformName(String source) {
-        if ("633".equals(source) || "sansan".equals(source)) return "633服务";
-        if ("航新".equals(source) || "hangxin".equals(source)) return "航新服务";
-        return source;
-    }
-
-    /** 航新服务：构型查询走 port2 */
-    private static final String PLATFORM_HANGXIN = "航新服务";
-
+    /** 按机型路由查询构型，返回统一响应 */
     public ApiResult<List<UnifiedConfigResponse>> queryConfigItems(UnifiedConfigRequest request) {
-        CompletableFuture<List<UnifiedConfigResponse>> localFuture   = queryLocalSafe(request);
-        CompletableFuture<List<UnifiedConfigResponse>> sanSanFuture   = queryExternalSafe("sansan", request);
-        CompletableFuture<List<UnifiedConfigResponse>> hangxinFuture  = queryExternalSafe("hangxin", request);
-
-        CompletableFuture.allOf(localFuture, sanSanFuture, hangxinFuture).join();
-
-        List<UnifiedConfigResponse> local   = localFuture.join();
-        List<UnifiedConfigResponse> sanSan  = sanSanFuture.join();
-        List<UnifiedConfigResponse> hangxin = hangxinFuture.join();
-
-        log.info("三方构型查询完成: 本地={}, 633={}, 航新={}",
-                local.size(), sanSan.size(), hangxin.size());
-
-        // 直接拼接，不做去重合并
-        List<UnifiedConfigResponse> dataList = new ArrayList<>();
-        dataList.addAll(local);
-        dataList.addAll(sanSan);
-        dataList.addAll(hangxin);
-
-        ApiResult<List<UnifiedConfigResponse>> result = ApiResult.success(dataList);
-        result.setLocal(new SourceInfo(local.size(), local.isEmpty() ? "本地无构型数据" : SUCCESS));
-        result.setSansan(new SourceInfo(sanSan.size(), sanSan.isEmpty() ? "633未返回数据" : SUCCESS));
-        result.setHangxin(new SourceInfo(hangxin.size(), hangxin.isEmpty() ? "航新未返回数据" : SUCCESS));
+        String modelKey = requireModel(request.getModelCode());
+        DataSource source = routeService.resolveModel(modelKey);
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，按本地查询构型", modelKey);
+            }
+            return localResult(modelKey);
+        }
+        List<ConfigItem> items = aircraftConfigService.listItems(modelKey);
+        List<UnifiedConfigResponse> data = items.stream()
+                .map(UnifiedConfigResponse::fromLocal)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        ApiResult<List<UnifiedConfigResponse>> result = ApiResult.success(data);
+        SourceInfo info = new SourceInfo(data.size(), data.isEmpty() ? "未返回数据" : SUCCESS);
+        if (source == DataSource.HANGXIN) {
+            result.setHangxin(info);
+        } else {
+            result.setSansan(info);
+        }
         return result;
     }
 
-    private CompletableFuture<List<UnifiedConfigResponse>> queryLocalSafe(UnifiedConfigRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                String modelCode = request.getModelCode();
-                // 只取本地行：聚合职责已下放到 listItems，这里若调它会再打一遍三方
-                // 未指定机型：默认列出本地全部机型的构型项目，行为与航新/633 一致
-                List<ConfigItem> items = aircraftConfigService.listLocalItems(modelCode);
-                return items.stream()
-                        .map(UnifiedConfigResponse::fromLocal)
-                        .filter(Objects::nonNull)
-                        .collect(Collectors.toList());
-            } catch (Exception e) {
-                log.warn("本地构型查询失败: {}", e.getMessage());
-                return Collections.emptyList();
-            }
-        });
-    }
-
-    /** 外部构型查询（使用各自平台的 base URL + 公共路径） */
-    private CompletableFuture<List<UnifiedConfigResponse>> queryExternalSafe(String sourceName, UnifiedConfigRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                String platName = platformName(sourceName);
-                // 构型查询走各平台的构型端口：航新服务为 port2，其余平台退回通用端口
-                String portKey = PLATFORM_HANGXIN.equals(platName)
-                        ? ExternalPlatform.KEY_PORT2 : ExternalPlatform.KEY_PORT;
-                String baseUrl = platformConfigService.getFullBaseUrl(platName, portKey);
-                if (baseUrl == null || baseUrl.isEmpty()) {
-                    log.warn("{}未配置 base URL", platName);
-                    return Collections.emptyList();
-                }
-                UriComponentsBuilder urlBuilder = UriComponentsBuilder.fromHttpUrl(baseUrl + configPath)
-                        .queryParam("page", request.getPageNum() != null ? request.getPageNum() : 1)
-                        .queryParam("rows", request.getPageSize() != null ? request.getPageSize() : 10);
-                // 指定机型时按 modelCode 过滤外源构型；不传则返回外源全量
-                if (request.getModelCode() != null && !request.getModelCode().isEmpty()) {
-                    urlBuilder = urlBuilder.queryParam("modelCode", request.getModelCode());
-                }
-                String fullUrl = urlBuilder.build().toUriString();
-                log.info("[外来平台调用] {} 请求方式: GET, URL: {}, 参数: page={}(Integer), rows={}(Integer){}",
-                        platName, fullUrl,
-                        request.getPageNum() != null ? request.getPageNum() : 1,
-                        request.getPageSize() != null ? request.getPageSize() : 10,
-                        (request.getModelCode() != null && !request.getModelCode().isEmpty())
-                                ? ", modelCode=" + request.getModelCode() + "(String)" : "");
-
-                String json = supportRestTemplate.getForObject(fullUrl, String.class);
-                if (json == null || json.isEmpty()) {
-                    return Collections.emptyList();
-                }
-                log.info("[外来平台调用] {} 请求方式: GET, URL: {} 原始返回: {}", platName, fullUrl, json);
-
-                return parseExternalConfig(json, sourceName);
-            } catch (Exception e) {
-                log.warn("{}构型查询失败: {}", sourceName, e.getMessage());
-                return Collections.emptyList();
-            }
-        });
-    }
-
-    /**
-     * 解析外部构型接口返回的 JSON，提取数据行并转为统一响应。
-     *
-     * <p>兼容两种返回形态：{@code data} 直接是数组，或 {@code data.rows}（分页包装）。</p>
-     */
-    @SuppressWarnings("unchecked")
-    private List<UnifiedConfigResponse> parseExternalConfig(String json, String source) {
+    private ApiResult<List<UnifiedConfigResponse>> localResult(String modelKey) {
+        List<UnifiedConfigResponse> data;
         try {
-            JsonNode root = objectMapper.readTree(json);
-            int code = root.path("code").asInt(0);
-            if (code != 200) {
-                log.warn("外部构型接口返回异常状态码: code={}", code);
-                return Collections.emptyList();
-            }
-            JsonNode dataNode = root.path("data");
-            if (dataNode.isMissingNode() || dataNode.isNull()) {
-                return Collections.emptyList();
-            }
-            // data 直接是数组，或 data.rows 为数组
-            JsonNode rowsNode = dataNode.isArray() ? dataNode : dataNode.path("rows");
-            if (rowsNode.isMissingNode() || !rowsNode.isArray()) {
-                return Collections.emptyList();
-            }
-            List<UnifiedConfigResponse> result = new ArrayList<>();
-            for (JsonNode row : rowsNode) {
-                Map<String, Object> map = objectMapper.treeToValue(row, Map.class);
-                UnifiedConfigResponse r = UnifiedConfigResponse.fromExternal(map, source);
-                if (r != null) result.add(r);
-            }
-            return result;
+            data = aircraftConfigService.listLocalItems(modelKey).stream()
+                    .map(UnifiedConfigResponse::fromLocal)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
         } catch (Exception e) {
-            log.warn("外部构型JSON解析失败: {}", e.getMessage());
-            return Collections.emptyList();
+            log.warn("本地构型查询失败: {}", e.getMessage());
+            data = Collections.emptyList();
         }
+        ApiResult<List<UnifiedConfigResponse>> result = ApiResult.success(data);
+        result.setLocal(new SourceInfo(data.size(), data.isEmpty() ? "本地无构型数据" : SUCCESS));
+        return result;
+    }
+
+    /** 机型是路由的必要条件 */
+    private static String requireModel(String modelCode) {
+        String modelKey = modelCode == null ? null : modelCode.trim();
+        if (modelKey == null || modelKey.isEmpty()) {
+            throw new IllegalArgumentException("机型不能为空");
+        }
+        return modelKey;
     }
 }

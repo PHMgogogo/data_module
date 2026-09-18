@@ -1,41 +1,21 @@
 package com.project.phm.utils;
 
-import com.opencsv.CSVReader;
-import com.opencsv.CSVWriter;
-import com.opencsv.exceptions.CsvException;
-
-import java.io.*;
-import java.util.ArrayList;
-import java.util.List;
-
 /**
- * CSV工具类，用于解析和生成CSV文件
+ * CSV工具类，用于列名与表名处理
  */
 public class CsvUtils {
 
     /**
-     * 解析CSV文件
-     * @param inputStream CSV文件输入流
-     * @return 解析后的二维列表
-     * @throws IOException IO异常
-     * @throws CsvException CSV解析异常
+     * 判断列名是否为时间戳列。
+     * @param colName 列名
+     * @return 是否时间戳列
      */
-    public static List<String[]> parseCsv(InputStream inputStream) throws IOException, CsvException {
-        try (CSVReader reader = new CSVReader(new InputStreamReader(inputStream, "UTF-8"))) {
-            return reader.readAll();
-        }
-    }
-
-    /**
-     * 生成CSV文件
-     * @param data 数据列表
-     * @param outputStream 输出流
-     * @throws IOException IO异常
-     */
-    public static void generateCsv(List<String[]> data, OutputStream outputStream) throws IOException {
-        try (CSVWriter writer = new CSVWriter(new OutputStreamWriter(outputStream, "UTF-8"))) {
-            writer.writeAll(data);
-        }
+    public static boolean isTimestampColumn(String colName) {
+        if (colName == null) return false;
+        String lower = colName.toLowerCase().trim();
+        return lower.equals("time") || lower.equals("timestamp")
+                || lower.equals("date") || lower.equals("datetime")
+                || lower.contains("date") || lower.contains("time");
     }
 
     /**

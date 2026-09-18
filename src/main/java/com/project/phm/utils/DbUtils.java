@@ -33,16 +33,6 @@ public class DbUtils {
     }
 
     /**
-     * 获取所有以csv_开头的表
-     * @return 表名列表（小写）
-     */
-    public List<String> getAllCsvTables() {
-        String sql = "SELECT TABLE_NAME FROM USER_TABLES WHERE TABLE_NAME LIKE 'CSV_%' ORDER BY TABLE_NAME";
-        List<String> tables = jdbcTemplate.queryForList(sql, String.class);
-        return tables.stream().map(String::toLowerCase).collect(Collectors.toList());
-    }
-
-    /**
      * 创建表
      * @param tableName 表名
      * @param columns 列名列表

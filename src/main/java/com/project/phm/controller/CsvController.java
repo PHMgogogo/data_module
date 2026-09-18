@@ -152,12 +152,14 @@ public class CsvController {
     /**
      * 分页查询达梦 csv_xxx 表数据
      */
-    @Operation(summary = "分页查询设备数据", 
-            description = "按机号+设备名分页查询达梦 csv_xxx 表数据。\n\n" +
-                    "**示例**：aircraftNumber=B-1234, deviceName=engine_vibration → 查询 csv_engine_vibration")
+    @Operation(summary = "分页查询设备数据",
+            description = "按机型 + 机号 + 设备名分页查询达梦 csv_xxx 表数据。\n\n" +
+                    "**机型**：必填，用于路由校验（CSV 数据只存在于本地）。\n" +
+                    "**示例**：modelCode=B737-800, aircraftNumber=B-1234, deviceName=engine_vibration → 查询 csv_engine_vibration")
     @Tag(name = "05-CSV数据管理")
     @GetMapping("/query")
     public ResponseEntity<?> queryDeviceData(
+            @Parameter(description = "机型代码", required = true, example = "B737-800") @RequestParam("modelCode") String modelCode,
             @Parameter(description = "机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
             @Parameter(description = "设备名（对应csv_后的表名）", required = true, example = "engine_vibration") @RequestParam("deviceName") String deviceName,
             @Parameter(description = "页码", example = "1") @RequestParam(value = "page", defaultValue = "1") int page,
@@ -221,12 +223,14 @@ public class CsvController {
      */
     @Operation(summary = "获取设备数据总览",
             description = "获取指定 csv_xxx 表的数据总览，包含行数、列数、列类型等信息。\n\n" +
+                    "**机型**：必填，用于路由校验（CSV 数据只存在于本地）。\n" +
                     "**传参方式**：\n" +
                     "- 传 `mappingId`：从构型关联自动解析机号 + 表名（推荐）\n" +
                     "- 传 `aircraftNumber` + `deviceName`：直接指定（兼容旧版）")
     @Tag(name = "05-CSV数据管理")
     @GetMapping("/overview")
     public ResponseEntity<?> getOverview(
+            @Parameter(description = "机型代码", required = true, example = "B737-800") @RequestParam("modelCode") String modelCode,
             @Parameter(description = "构型关联ID（与aircraftNumber+deviceName二选一）", example = "1") @RequestParam(value = "mappingId", required = false) Long mappingId,
             @Parameter(description = "机号（与mappingId二选一）", example = "B-1234") @RequestParam(value = "aircraftNumber", required = false) String aircraftNumber,
             @Parameter(description = "设备名（与mappingId二选一）", example = "engine_vibration") @RequestParam(value = "deviceName", required = false) String deviceName) {
@@ -275,12 +279,14 @@ public class CsvController {
     /**
      * 按数值范围分页查询达梦数据
      */
-    @Operation(summary = "按数值范围分页查询", 
+    @Operation(summary = "按数值范围分页查询",
             description = "在指定列上按数值范围(min ≤ value ≤ max)过滤数据，并分页返回。\n\n" +
+                    "**机型**：必填，用于路由校验（CSV 数据只存在于本地）。\n" +
                     "**示例**：column=vibration, min=2.0, max=3.0 → 查询振动值在2.0~3.0之间的数据")
     @Tag(name = "05-CSV数据管理")
     @GetMapping("/query-range")
     public ResponseEntity<?> queryByValueRange(
+            @Parameter(description = "机型代码", required = true, example = "B737-800") @RequestParam("modelCode") String modelCode,
             @Parameter(description = "机号", required = true, example = "B-1234") @RequestParam("aircraftNumber") String aircraftNumber,
             @Parameter(description = "设备名", required = true, example = "engine_vibration") @RequestParam("deviceName") String deviceName,
             @Parameter(description = "数值列名", required = true, example = "vibration") @RequestParam("column") String column,
@@ -350,12 +356,15 @@ public class CsvController {
 
     // ==================== 原有达梦表操作（保持不变） ====================
 
-    @Operation(summary = "查询表的全部数据", 
+    @Operation(summary = "查询表的全部数据",
             description = "返回指定 csv_xxx 表的所有数据（不分页，慎用！大表会很慢）。\n\n" +
+                    "**机型**：必填，用于路由校验（CSV 数据只存在于本地）。\n" +
                     "建议优先使用 `/csv/query`（分页）或 `/csv/sql`（自定义查询）。")
     @Tag(name = "05-CSV数据管理")
     @GetMapping("/list")
-    public ResponseEntity<?> listData(@Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName) {
+    public ResponseEntity<?> listData(
+            @Parameter(description = "机型代码", required = true, example = "B737-800") @RequestParam("modelCode") String modelCode,
+            @Parameter(description = "表名（含csv_前缀）", required = true, example = "csv_engine_vibration") @RequestParam("tableName") String tableName) {
         try {
             List<Map<String, Object>> data = csvService.listData(tableName);
             return ResponseEntity.ok(data);
@@ -557,12 +566,12 @@ public class CsvController {
      * <pre>{@code
      * POST /csv/query-timeseries
      * {
+     *   "airplaneType": "K4-WS19:6",
      *   "sortieId": "1",
      *   "startTime": "2026-07-23 10:30:00",
      *   "endTime": "2026-07-23 14:20:00",
      *   "paralist": ["ALTITUDE", "SPEED"],
      *   "samplingRate": "10"
-     * }
      * }</pre>
      *
      * <p><b>响应示例：</b></p>
@@ -580,21 +589,17 @@ public class CsvController {
      * }
      * }</pre>
      */
-    @Operation(summary = "时序数据查询（按架次定向到唯一平台）",
+    @Operation(summary = "查询时序数据（按机型路由）",
             description = "返回统一格式 `data.timestamps` + `data.parameters[{name, values}]`。\n\n" +
-                    "**定位规则**：推荐使用 `sortieKey`，为兼容旧前端也接受 `sortieId`。" +
-                    "取 `GET /aircraft/sorties` 返回的 `sortieKey`（本地行是数字主键的字符串，" +
-                    "三方行是平台原始 id）。后端据此在内存路由索引里" +
-                    "确定该架次归属本地 / 航新 / 633，**只向那一个平台发请求**。\n" +
-                    "**未命中**：`sortieId` 不在索引里（id 不存在，或应用刚启动还没建过索引）时返回空的" +
-                    " timestamps / parameters 并记 warn 日志，不会回落其它源。请先调用 `GET /aircraft/sorties` " +
-                    "加载该架次。\n" +
+                    "**必填**：`airplaneType`（机型）、`sortieId`（架次标识，取自 `/aircraft/sorties` 的 `sortieKey`）。\n" +
+                    "**路由规则**：后端据机型在内存路由表里解析归属平台，命中三方**只向那一个平台发请求**；" +
+                    "未命中路由或该平台不可达（保活失败）时回落本地。\n" +
                     "**时间**：`startTime` / `endTime` 可选 —— 传了以传入值为准；不传时优先使用 /aircraft/sorties " +
                     "刷新时缓存的架次起止时间，缓存缺失才回查三方架次接口。" +
-                    "两者最终都转成 `2026-07-23T10:30:00.000Z` 形式再传给三方时序接口。" +
+                    "两者最终都转成 `2026-07-23T10:30:00.000+08:00` 形式再传给三方时序接口。" +
                     "传入格式支持 `2026-07-23 10:30:00`（含小数秒）与 ISO 两种。\n" +
                     "**采样率**：`samplingRate` 不传默认 10。\n" +
-                    "**aircraftNumber / airplaneType**：可选补充，只在索引缺少该架次的对应字段时才会用到；" +
+                    "**aircraftNumber**：可选补充，只在索引缺少该架次的机号时才会用到；" +
                     "带冒号的合成机型码（`K4-WS19:6`）不会被转发给三方。")
     @Tag(name = "05-CSV数据管理")
     @PostMapping("/query-timeseries")

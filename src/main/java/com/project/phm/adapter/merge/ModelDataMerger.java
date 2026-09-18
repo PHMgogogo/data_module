@@ -9,38 +9,42 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 三方（航新、633、本地）机型数据拼接器。
+ * 机型统一响应转换器。
  *
- * <p>不做跨源去重合并，直接将各源数据全部放入结果列表，每条记录标记来源。</p>
+ * <p>机型查询按机型路由到唯一平台，一次只有一个来源，因此这里只做单源转换，
+ * 不做跨源拼接。</p>
  */
 @Component
 public class ModelDataMerger {
 
-    public List<UnifiedModelResponse> merge(
-            List<ExternalModelData> hangxinList,
-            List<ExternalModelData> sanSanList,
-            List<AircraftModel> localList) {
+    /** 航新机型行 → 统一响应 */
+    public List<UnifiedModelResponse> fromHangxin(List<ExternalModelData> list) {
+        return fromExternal(list, "hangxin");
+    }
 
+    /** 633 机型行 → 统一响应 */
+    public List<UnifiedModelResponse> fromSanSan(List<ExternalModelData> list) {
+        return fromExternal(list, "sansan");
+    }
+
+    /** 本地机型行 → 统一响应 */
+    public List<UnifiedModelResponse> fromLocal(List<AircraftModel> list) {
         List<UnifiedModelResponse> result = new ArrayList<>();
-
-        if (hangxinList != null) {
-            for (ExternalModelData ext : hangxinList) {
-                result.add(UnifiedModelResponse.fromExternal(ext, "hangxin"));
-            }
-        }
-
-        if (sanSanList != null) {
-            for (ExternalModelData ext : sanSanList) {
-                result.add(UnifiedModelResponse.fromExternal(ext, "sansan"));
-            }
-        }
-
-        if (localList != null) {
-            for (AircraftModel local : localList) {
+        if (list != null) {
+            for (AircraftModel local : list) {
                 result.add(UnifiedModelResponse.fromLocal(local));
             }
         }
+        return result;
+    }
 
+    private List<UnifiedModelResponse> fromExternal(List<ExternalModelData> list, String source) {
+        List<UnifiedModelResponse> result = new ArrayList<>();
+        if (list != null) {
+            for (ExternalModelData ext : list) {
+                result.add(UnifiedModelResponse.fromExternal(ext, source));
+            }
+        }
         return result;
     }
 }

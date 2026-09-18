@@ -32,7 +32,7 @@ class PlatformRouteServiceTest {
                 Arrays.asList("H-001", "H-002"));
         assertEquals(new LinkedHashSet<>(Arrays.asList("H-001", "H-002")),
                 routeService.aircraftNumbersForModel("A320"));
-        assertEquals(DataSource.HANGXIN, routeService.resolveAircraft("H-001"));
+        assertEquals(DataSource.HANGXIN, routeService.resolveAircraftRef("H-001").getSource());
 
         routeService.replaceSorties(DataSource.HANGXIN, "H-001",
                 Collections.singletonList(PlatformRouteService.SortieRef.external(
@@ -92,7 +92,7 @@ class PlatformRouteServiceTest {
         routeService.replaceAircraft(DataSource.SAN_SAN, "UNKNOWN:1",
                 Collections.singletonList("UNKNOWN-1"));
 
-        assertNull(routeService.resolveAircraft("UNKNOWN-1"));
+        assertNull(routeService.resolveAircraftRef("UNKNOWN-1"));
     }
 
     @Test

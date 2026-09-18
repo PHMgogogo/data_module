@@ -84,24 +84,6 @@ public class PlatformConfigService {
     }
 
     /**
-     * 按平台名 + key 从 platform_config 中取配置值。
-     * 不同平台需要的 key 不同，由调用方（各平台适配器）自行指定。
-     *
-     * @return 配置值，平台未配置 / config 为空 / key 不存在时返回 null
-     */
-    public String getConfigValue(String platformName, String key) {
-        ExternalPlatform p = getByPlatformName(platformName);
-        if (p == null) return null;
-        return extractConfigValue(p.getPlatformConfig(), key);
-    }
-
-    /** 按平台名 + key 取配置值，缺省返回 defaultValue */
-    public String getConfigValue(String platformName, String key, String defaultValue) {
-        String value = getConfigValue(platformName, key);
-        return (value == null || value.isEmpty()) ? defaultValue : value;
-    }
-
-    /**
      * 从 config JSON 中取指定 key 的字符串值（兼容数字/布尔值）。
      *
      * @return 配置值，config 非法 / 为空 / key 不存在时返回 null
@@ -118,11 +100,6 @@ public class PlatformConfigService {
         }
     }
 
-    /** 获取完整 base URL：http://ip[:port]，无配置时返回 null */
-    public String getFullBaseUrl(String platformName) {
-        return buildBaseUrl(getByPlatformName(platformName), platformName);
-    }
-
     /**
      * 按平台名 + 端口配置 key 拼出 base URL：http://ip[:port]。
      *
@@ -133,7 +110,6 @@ public class PlatformConfigService {
      * @return base URL，平台未配置 / 无 ip 时返回 null
      */
     public String getFullBaseUrl(String platformName, String portKey) {
-        if (portKey == null) return getFullBaseUrl(platformName);
         ExternalPlatform p = getByPlatformName(platformName);
         if (p == null) return null;
         return buildBaseUrl(p.getPlatformConfig(), platformName, portKey);
@@ -208,11 +184,6 @@ public class PlatformConfigService {
         return (port1 != null && !port1.isEmpty()) ? ExternalPlatform.KEY_PORT1 : ExternalPlatform.KEY_PORT;
     }
 
-    /** 由 config JSON 拼出 base URL：http://ip[:port]，ip 缺失返回 null */
-    private String buildBaseUrl(String config, String platformName) {
-        return buildBaseUrl(config, platformName, ExternalPlatform.KEY_PORT);
-    }
-
     /** 由 config JSON 拼出 base URL：http://ip[:portKey]，ip 缺失返回 null */
     private String buildBaseUrl(String config, String platformName, String portKey) {
         String ip = extractConfigValue(config, ExternalPlatform.KEY_IP);
@@ -233,12 +204,6 @@ public class PlatformConfigService {
         }
         if (port != null && !port.isEmpty()) url += ":" + port;
         return url;
-    }
-
-    /** 由平台记录拼出 base URL */
-    private String buildBaseUrl(ExternalPlatform platform, String platformName) {
-        if (platform == null) return null;
-        return buildBaseUrl(platform.getPlatformConfig(), platformName);
     }
 
     private boolean doTest(String baseUrl) {

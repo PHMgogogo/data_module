@@ -17,12 +17,4 @@ public enum PlatformType {
     public String getDisplayName() {
         return displayName;
     }
-
-    /** 根据中文名反查枚举 */
-    public static PlatformType fromDisplayName(String name) {
-        for (PlatformType t : values()) {
-            if (t.displayName.equals(name)) return t;
-        }
-        return null;
-    }
 }

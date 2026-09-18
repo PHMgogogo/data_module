@@ -35,18 +35,4 @@ public enum DataSource {
     public boolean isExternal() {
         return this != LOCAL;
     }
-
-    /**
-     * 转为平台配置用的中文平台名；{@link #LOCAL} 没有平台配置，返回 null。
-     */
-    public String toPlatformName() {
-        switch (this) {
-            case HANGXIN:
-                return PlatformType.HANGXIN.getDisplayName();
-            case SAN_SAN:
-                return PlatformType.SAN_SAN.getDisplayName();
-            default:
-                return null;
-        }
-    }
 }

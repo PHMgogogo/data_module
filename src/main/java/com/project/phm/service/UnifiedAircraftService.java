@@ -1,8 +1,10 @@
 package com.project.phm.service;
 
+import com.project.phm.adapter.client.BaseExternalClient;
 import com.project.phm.adapter.client.HangxinSortieClient;
 import com.project.phm.adapter.client.SanSanSortieClient;
 import com.project.phm.adapter.dto.ApiResult;
+import com.project.phm.adapter.dto.DataSource;
 import com.project.phm.adapter.dto.SourceInfo;
 import com.project.phm.adapter.dto.UnifiedAircraftRequest;
 import com.project.phm.adapter.dto.UnifiedAircraftResponse;
@@ -12,13 +14,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 /**
  * 统一单机查询编排服务。
  *
- * <p>并发调用三个数据源，将各源结果全部放入列表（不做去重合并），每条记录标记来源。</p>
+ * <p>按请求里的机型路由到唯一数据源：命中三方只查那一个平台，未命中路由或平台不可达时回落本地。</p>
  */
 @Service
 public class UnifiedAircraftService {
@@ -30,97 +31,92 @@ public class UnifiedAircraftService {
     private final HangxinSortieClient hangxinClient;
     private final SanSanSortieClient sanSanClient;
     private final AircraftConfigService aircraftConfigService;
+    private final PlatformRouteService routeService;
 
     public UnifiedAircraftService(HangxinSortieClient hangxinClient,
                                   SanSanSortieClient sanSanClient,
-                                  AircraftConfigService aircraftConfigService) {
+                                  AircraftConfigService aircraftConfigService,
+                                  PlatformRouteService routeService) {
         this.hangxinClient = hangxinClient;
         this.sanSanClient = sanSanClient;
         this.aircraftConfigService = aircraftConfigService;
+        this.routeService = routeService;
     }
 
+    /** 按机型路由查询单机，返回统一响应 */
     public ApiResult<List<UnifiedAircraftResponse>> queryAircraft(UnifiedAircraftRequest request) {
-        CompletableFuture<List<UnifiedAircraftResponse>> localFuture   = queryLocalSafe(request);
-        CompletableFuture<List<UnifiedAircraftResponse>> sanSanFuture  = querySanSanSafe(request);
-        CompletableFuture<List<UnifiedAircraftResponse>> hangxinFuture = queryHangxinSafe(request);
+        String modelKey = requireModel(request.getAirplaneType());
+        DataSource source = routeService.resolveModel(modelKey);
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，按本地查询单机", modelKey);
+            }
+            return localResult(request, modelKey);
+        }
+        return externalResult(request, source, modelKey);
+    }
 
-        CompletableFuture.allOf(localFuture, sanSanFuture, hangxinFuture).join();
-
-        List<UnifiedAircraftResponse> local   = localFuture.join();
-        List<UnifiedAircraftResponse> sanSan  = sanSanFuture.join();
-        List<UnifiedAircraftResponse> hangxin = hangxinFuture.join();
-
-        log.info("三方单机查询完成: 本地={}, 633={}, 航新={}",
-                local.size(), sanSan.size(), hangxin.size());
-
-        // 直接拼接，不做去重合并
-        List<UnifiedAircraftResponse> dataList = new ArrayList<>();
-        dataList.addAll(local);
-        dataList.addAll(sanSan);
-        dataList.addAll(hangxin);
-
-        ApiResult<List<UnifiedAircraftResponse>> result = ApiResult.success(dataList);
-        boolean hasNum = request.getAirplaneNum() != null && !request.getAirplaneNum().isEmpty();
-        result.setLocal(new SourceInfo(local.size(),
-                local.isEmpty() ? (hasNum ? "本机未找到该单机" : "本机无单机数据") : SUCCESS));
-        result.setSansan(new SourceInfo(sanSan.size(), sanSan.isEmpty() ? "633未返回数据" : SUCCESS));
-        result.setHangxin(new SourceInfo(hangxin.size(), hangxin.isEmpty() ? "航新未返回数据" : SUCCESS));
+    private ApiResult<List<UnifiedAircraftResponse>> localResult(UnifiedAircraftRequest request,
+                                                                String modelKey) {
+        List<UnifiedAircraftResponse> localData;
+        try {
+            String aircraftNum = request.getAirplaneNum();
+            if (aircraftNum == null || aircraftNum.isEmpty()) {
+                localData = aircraftConfigService.listLocalPlanes(modelKey).stream()
+                        .map(UnifiedAircraftResponse::fromLocal)
+                        .filter(Objects::nonNull)
+                        .collect(Collectors.toList());
+            } else {
+                Aircraft plane = aircraftConfigService.getPlane(aircraftNum);
+                // 指定机号时校验机型一致性，不一致视为未命中
+                if (plane == null || !modelKey.equals(plane.getModelCode())) {
+                    localData = Collections.emptyList();
+                } else {
+                    UnifiedAircraftResponse r = UnifiedAircraftResponse.fromLocal(plane);
+                    localData = r != null ? Collections.singletonList(r) : Collections.emptyList();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("本地单机查询失败: {}", e.getMessage());
+            localData = Collections.emptyList();
+        }
+        ApiResult<List<UnifiedAircraftResponse>> result = ApiResult.success(localData);
+        result.setLocal(new SourceInfo(localData.size(),
+                localData.isEmpty() ? "本机未找到该单机" : SUCCESS));
         return result;
     }
 
-    private CompletableFuture<List<UnifiedAircraftResponse>> queryLocalSafe(UnifiedAircraftRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                String aircraftNum = request.getAirplaneNum();
-                String airplaneType = request.getAirplaneType();
-                if (aircraftNum == null || aircraftNum.isEmpty()) {
-                    // 未指定机号：列出本地全部单机（可按机型过滤），行为与航新/633 一致
-                    // 走纯本地查询，避免叠加 /aircraft/plane 里已做的三方聚合
-                    return aircraftConfigService.listLocalPlanes(airplaneType).stream()
-                            .map(UnifiedAircraftResponse::fromLocal)
-                            .filter(Objects::nonNull)
-                            .collect(Collectors.toList());
-                }
-                Aircraft plane = aircraftConfigService.getPlane(aircraftNum);
-                if (plane == null) {
-                    return Collections.emptyList();
-                }
-                // 同时指定机型时校验一致性，不一致视为未命中
-                if (airplaneType != null && !airplaneType.isEmpty()
-                        && !airplaneType.equals(plane.getModelCode())) {
-                    return Collections.emptyList();
-                }
-                UnifiedAircraftResponse r = UnifiedAircraftResponse.fromLocal(plane);
-                return r != null ? Collections.singletonList(r) : Collections.emptyList();
-            } catch (Exception e) {
-                log.warn("本地单机查询失败: {}", e.getMessage());
-                return Collections.emptyList();
-            }
-        });
+    private ApiResult<List<UnifiedAircraftResponse>> externalResult(UnifiedAircraftRequest request,
+                                                                   DataSource source, String modelKey) {
+        String realAirplaneType = routeService.realAirplaneType(modelKey);
+        Map<String, Object> params = new HashMap<>();
+        if (realAirplaneType != null) {
+            params.put("airplaneType", realAirplaneType);
+        }
+        String aircraftNum = request.getAirplaneNum();
+        if (aircraftNum != null && !aircraftNum.isEmpty()) {
+            params.put("airplaneNum", aircraftNum);
+        }
+        List<UnifiedAircraftResponse> data;
+        try {
+            Object raw = clientFor(source).queryForRawData(AIRCRAFT_PATH, params);
+            data = parseAircraftList(raw, source == DataSource.SAN_SAN ? "sansan" : "hangxin");
+        } catch (Exception e) {
+            log.warn("{}单机查询失败: {}", source.getLabel(), e.getMessage());
+            data = Collections.emptyList();
+        }
+        ApiResult<List<UnifiedAircraftResponse>> result = ApiResult.success(data);
+        SourceInfo info = new SourceInfo(data.size(), data.isEmpty() ? "未返回数据" : SUCCESS);
+        if (source == DataSource.HANGXIN) {
+            result.setHangxin(info);
+        } else {
+            result.setSansan(info);
+        }
+        return result;
     }
 
-    private CompletableFuture<List<UnifiedAircraftResponse>> querySanSanSafe(UnifiedAircraftRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                Object raw = sanSanClient.queryForRawData(AIRCRAFT_PATH, request.toSanSanParams());
-                return parseAircraftList(raw, "sansan");
-            } catch (Exception e) {
-                log.warn("633单机查询失败: {}", e.getMessage());
-                return Collections.emptyList();
-            }
-        });
-    }
-
-    private CompletableFuture<List<UnifiedAircraftResponse>> queryHangxinSafe(UnifiedAircraftRequest request) {
-        return CompletableFuture.supplyAsync(() -> {
-            try {
-                Object raw = hangxinClient.queryForRawData(AIRCRAFT_PATH, request.toHangxinParams());
-                return parseAircraftList(raw, "hangxin");
-            } catch (Exception e) {
-                log.warn("航新单机查询失败: {}", e.getMessage());
-                return Collections.emptyList();
-            }
-        });
+    private BaseExternalClient clientFor(DataSource source) {
+        return source == DataSource.SAN_SAN ? sanSanClient : hangxinClient;
     }
 
     /** 将外部返回的 raw data（预期为 List<Map>）转为统一响应行列表 */
@@ -150,5 +146,14 @@ public class UnifiedAircraftService {
             return r != null ? Collections.singletonList(r) : Collections.emptyList();
         }
         return Collections.emptyList();
+    }
+
+    /** 机型是路由的必要条件 */
+    private static String requireModel(String modelCode) {
+        String modelKey = modelCode == null ? null : modelCode.trim();
+        if (modelKey == null || modelKey.isEmpty()) {
+            throw new IllegalArgumentException("机型不能为空");
+        }
+        return modelKey;
     }
 }

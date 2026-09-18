@@ -16,7 +16,7 @@ import java.util.Map;
 @Schema(description = "统一架次查询请求")
 public class UnifiedSortieRequest {
 
-    @Schema(description = "机型，精确匹配（航新/633）", example = "A320")
+    @Schema(description = "机型（必填），后端据此路由到唯一平台", example = "A320", requiredMode = Schema.RequiredMode.REQUIRED)
     private String airplaneType;
 
     @Schema(description = "机号，精确匹配（航新/633/本地）", example = "B1234")

@@ -31,8 +31,4 @@ public class ExternalConfigPage {
     public int getTotal() { return total; }
 
     public List<Map<String, Object>> getRows() { return rows; }
-
-    public boolean isEmpty() { return rows.isEmpty(); }
-
-    public int getRowCount() { return rows.size(); }
 }

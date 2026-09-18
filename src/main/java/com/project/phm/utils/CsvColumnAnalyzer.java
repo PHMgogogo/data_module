@@ -58,17 +58,6 @@ public class CsvColumnAnalyzer {
 
         public List<Map<String, String>> getSampleData() { return sampleData; }
         public void setSampleData(List<Map<String, String>> sampleData) { this.sampleData = sampleData; }
-
-        /** 建议构型模板标签：基于数值列生成的传感器描述 */
-        public String suggestTemplateName() {
-            if (numericColumns == null || numericColumns.isEmpty()) return "unknown_sensor";
-            String first = numericColumns.get(0);
-            // 取第一个数值列名前缀作为模板名
-            if (first.contains("_")) {
-                return first.substring(0, first.lastIndexOf('_'));
-            }
-            return first;
-        }
     }
 
     /**
@@ -125,7 +114,7 @@ public class CsvColumnAnalyzer {
             boolean timestampFound = false;
 
             for (String col : processedCols) {
-                if (!timestampFound && IoTDbUtils.isTimestampColumn(col)) {
+                if (!timestampFound && CsvUtils.isTimestampColumn(col)) {
                     timestampCol = col;
                     timestampFound = true;
                     columnTypes.put(col, "TIMESTAMP");
@@ -194,42 +183,5 @@ public class CsvColumnAnalyzer {
         if (allInt) return "INT64";
         if (allNum) return "DOUBLE";
         return "TEXT";
-    }
-
-    /**
-     * 根据分析结果生成构型模板（传感器级ConfigItem建议）
-     */
-    public List<Map<String, String>> generateTemplateItems(AnalysisResult analysis) {
-        List<Map<String, String>> items = new ArrayList<>();
-
-        for (String col : analysis.getNumericColumns()) {
-            Map<String, String> item = new LinkedHashMap<>();
-            item.put("columnName", col);
-            item.put("equipmentName", colToEquipmentName(col));
-            item.put("partNumber", "");
-            item.put("itemType", "EQUIPMENT");
-            items.add(item);
-        }
-
-        return items;
-    }
-
-    private String colToEquipmentName(String col) {
-        // fan_vibration → 风扇振动传感器
-        // n1_speed → N1转速传感器
-        // egt_actual → EGT实际值传感器
-        StringBuilder sb = new StringBuilder();
-        String[] parts = col.split("_");
-        for (String part : parts) {
-            if (part.equalsIgnoreCase("sensor") || part.equalsIgnoreCase("probe")) {
-                sb.append(part);
-            } else {
-                sb.append(part).append(" ");
-            }
-        }
-        if (!col.toLowerCase().contains("sensor")) {
-            sb.append("传感器");
-        }
-        return sb.toString().trim();
     }
 }

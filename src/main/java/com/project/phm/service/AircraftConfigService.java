@@ -7,21 +7,16 @@ import com.project.phm.adapter.client.SanSanSortieClient;
 import com.project.phm.adapter.dto.DataSource;
 import com.project.phm.adapter.dto.ExternalAircraftData;
 import com.project.phm.adapter.dto.ExternalConfigPage;
-import com.project.phm.adapter.dto.ExternalModelData;
 import com.project.phm.adapter.dto.ExternalSortieData;
 import com.project.phm.entity.*;
 import com.project.phm.mapper.*;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.boot.context.event.ApplicationReadyEvent;
-import org.springframework.context.event.EventListener;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 /**
@@ -34,9 +29,6 @@ public class AircraftConfigService {
 
     /** 第三方平台机型行 manufacturer / description / createdAt 的占位符 */
     private static final String PLACEHOLDER = "-";
-
-    private static final String LABEL_HANGXIN = "航新";
-    private static final String LABEL_SANSAN = "633";
 
     /** 三方构型接口的分页参数：前端未暴露，固定默认值 */
     private static final int DEFAULT_CONFIG_PAGE = 1;
@@ -80,35 +72,21 @@ public class AircraftConfigService {
     // ==================== 机型管理 ====================
 
     /**
-     * 查询全部机型：本地 aircraft_model 行在前，随后依次拼接航新、633 平台的机型，跨源不去重。
+     * 查询全部机型：本地 aircraft_model 行在前，随后依次拼接航新、633 平台在内存中的机型快照。
      *
-     * <p>第三方行的 modelCode 为 {@code airplaneType + ":" + id}，manufacturer / description /
-     * createdAt 固定为 {@code "-"}；这些实例仅用于响应，不参与任何持久化。</p>
+     * <p>三方机型不再由本接口拉取 —— 它由 {@link PlatformModelPoller} 每 5 秒轮询维护，
+     * 这里只读内存里的机型映射（键为 {@code airplaneType:id}），读不到说明该平台当前不可达。</p>
      *
-     * <p>任一第三方平台未配置或不可达时仅跳过该平台并记日志，本地数据照常返回；
-     * 本地库异常不吞，直接向上抛出由控制器返回 500。</p>
+     * <p>第三方行的 manufacturer / description / createdAt 固定为 {@code "-"}；
+     * 这些实例仅用于响应，不参与任何持久化。</p>
      */
     public List<AircraftModel> listModels() {
-        Map<String, Object> noFilter = Collections.emptyMap();
-
-        // 每个平台返回后立即更新自己的机型子树，不再等待其它平台。
-        CompletableFuture<Optional<List<ExternalModelData>>> hangxinModelsF =
-                updateModelRoute(fetchAsync(
-                        () -> hangxinClient.queryModels(noFilter), LABEL_HANGXIN, "机型"),
-                        DataSource.HANGXIN);
-        CompletableFuture<Optional<List<ExternalModelData>>> sanSanModelsF =
-                updateModelRoute(fetchAsync(
-                        () -> sanSanClient.queryModels(noFilter), LABEL_SANSAN, "机型"),
-                        DataSource.SAN_SAN);
-
         List<AircraftModel> localModels = listLocalModels();
+        // 本地机型是查询的兜底路由，每次查询前同步一次，保证新建机型立即可路由
         routeService.replaceModels(DataSource.LOCAL, toLocalModelDefinitions(localModels));
 
-        Optional<List<ExternalModelData>> hangxinRaw = awaitFetch(hangxinModelsF, LABEL_HANGXIN, "机型");
-        Optional<List<ExternalModelData>> sanSanRaw = awaitFetch(sanSanModelsF, LABEL_SANSAN, "机型");
-
-        List<AircraftModel> hangxinModels = toModels(hangxinRaw.orElse(Collections.emptyList()));
-        List<AircraftModel> sanSanModels = toModels(sanSanRaw.orElse(Collections.emptyList()));
+        List<AircraftModel> hangxinModels = toModels(routeService.modelsOf(DataSource.HANGXIN));
+        List<AircraftModel> sanSanModels = toModels(routeService.modelsOf(DataSource.SAN_SAN));
         int localCount = localModels == null ? 0 : localModels.size();
         List<AircraftModel> merged = new ArrayList<>(localCount + hangxinModels.size() + sanSanModels.size());
         if (localModels != null) {
@@ -128,73 +106,7 @@ public class AircraftConfigService {
                 Wrappers.<AircraftModel>lambdaQuery().orderByAsc(AircraftModel::getModelCode));
     }
 
-    /**
-     * 启动预热：起来后异步刷新一次平台机型映射。
-     *
-     * <p>不加这段的话，机型路由要等前端第一次调 {@code /aircraft/models} 才有内容。</p>
-     *
-     * <p>异步执行、异常全吞，失败只是退回「等首次 /aircraft/models」的状态，不影响启动。</p>
-     */
-    @EventListener(ApplicationReadyEvent.class)
-    public void warmUpRouteIndex() {
-        CompletableFuture.runAsync(() -> {
-            try {
-                int count = listModels().size();
-                log.info("启动预热完成，平台机型映射已就绪（聚合机型 {} 条）", count);
-            } catch (Exception e) {
-                log.warn("启动预热失败，索引将在首次 /aircraft/models 时建立: {}", e.getMessage());
-            }
-        });
-    }
-
-    // ==================== 外源拉取（带异常隔离与状态） ====================
-
-    /**
-     * 外源单次拉取的包装：成功返回 {@code Optional.of(数据)}（可能是空列表，表示该源真的没数据），
-     * 失败返回 {@code Optional.empty()}。
-     *
-     * <p>「本次失败」与「本次为空」必须分开 —— 平台路由索引靠这个区分决定是否沿用上一轮数据。
-     * 把「平台没配置」误判成「该平台数据为空」，会直接清空它上一轮建好的索引。</p>
-     */
-    private <T> CompletableFuture<Optional<List<T>>> fetchAsync(Supplier<List<T>> call,
-                                                                String label, String what) {
-        return CompletableFuture.supplyAsync(() -> fetchNow(call, label, what));
-    }
-
-    /** 未配置 / 不可达 / 超时 / HTTP 4xx-5xx / 解析异常均在此吞掉 */
-    private <T> Optional<List<T>> fetchNow(Supplier<List<T>> call, String label, String what) {
-        try {
-            return Optional.of(orEmpty(call.get()));
-        } catch (Exception e) {
-            log.warn("{}{}查询失败，已跳过该数据源: {}", label, what, e.getMessage());
-            return Optional.empty();
-        }
-    }
-
-    /** 兜底 join：正常情况下 future 内的 try/catch 已保证不抛异常 */
-    private <T> Optional<List<T>> awaitFetch(CompletableFuture<Optional<List<T>>> future,
-                                             String label, String what) {
-        try {
-            Optional<List<T>> result = future.join();
-            return result == null ? Optional.<List<T>>empty() : result;
-        } catch (Exception e) {
-            log.warn("{}{}聚合任务异常，已跳过该数据源: {}", label, what, e.getMessage());
-            return Optional.empty();
-        }
-    }
-
     // ==================== 路由树机型更新 ====================
-
-    /** 平台机型请求完成后立即更新该平台的机型子树。 */
-    private CompletableFuture<Optional<List<ExternalModelData>>> updateModelRoute(
-            CompletableFuture<Optional<List<ExternalModelData>>> future, DataSource source) {
-        return future.thenApply(result -> {
-            if (result != null && result.isPresent()) {
-                routeService.replaceModels(source, toExternalModelDefinitions(result.get()));
-            }
-            return result;
-        });
-    }
 
     private List<PlatformRouteService.ModelDefinition> toLocalModelDefinitions(
             List<AircraftModel> models) {
@@ -208,58 +120,20 @@ public class AircraftConfigService {
         return definitions;
     }
 
-    private List<PlatformRouteService.ModelDefinition> toExternalModelDefinitions(
-            List<ExternalModelData> models) {
-        List<PlatformRouteService.ModelDefinition> definitions = new ArrayList<>();
-        for (ExternalModelData model : orEmpty(models)) {
-            if (model == null) {
-                continue;
-            }
-            String key = modelKey(model.getAirplaneType(), model.getId());
-            if (key != null) {
-                definitions.add(new PlatformRouteService.ModelDefinition(
-                        key, model.getAirplaneType()));
-            }
-        }
-        return definitions;
-    }
-
     /**
-     * 三方机型的索引键：{@code airplaneType + ":" + id}，与下发给前端的 modelCode 同源。
-     *
-     * <p>任一侧为空时返回 null（整条丢弃）—— 这类记录拼出来是 {@code "K4-WS19:null"}，
-     * 看着像个合法 code 其实永远查不到，留在响应里只会让前端拿着它去白查一轮。</p>
+     * 内存机型定义转为响应载体：modelCode = {@code airplaneType:id}，其余三字段为占位符。
      */
-    private static String modelKey(String airplaneType, String id) {
-        if (airplaneType == null || airplaneType.trim().isEmpty()) {
-            return null;
-        }
-        if (id == null || id.trim().isEmpty()) {
-            return null;
-        }
-        return airplaneType + ":" + id;
-    }
-
-    /**
-     * 第三方行转为响应载体：modelCode = airplaneType + ":" + id，其余三字段为占位符。
-     */
-    private List<AircraftModel> toModels(List<ExternalModelData> raw) {
-        if (raw == null || raw.isEmpty()) {
+    private List<AircraftModel> toModels(Collection<PlatformRouteService.ModelDefinition> definitions) {
+        if (definitions == null || definitions.isEmpty()) {
             return Collections.emptyList();
         }
-        List<AircraftModel> models = new ArrayList<>(raw.size());
-        for (ExternalModelData ext : raw) {
-            if (ext == null) {
-                continue;
-            }
-            String key = modelKey(ext.getAirplaneType(), ext.getId());
-            if (key == null) {
-                log.warn("三方机型缺少 airplaneType 或 id，已跳过该行: airplaneType={}, id={}",
-                        ext.getAirplaneType(), ext.getId());
+        List<AircraftModel> models = new ArrayList<>(definitions.size());
+        for (PlatformRouteService.ModelDefinition definition : definitions) {
+            if (definition == null) {
                 continue;
             }
             AircraftModel model = new AircraftModel();
-            model.setModelCode(key);
+            model.setModelCode(definition.getModelKey());
             model.setManufacturer(PLACEHOLDER);
             model.setDescription(PLACEHOLDER);
             model.setCreatedAt(PLACEHOLDER);
@@ -270,6 +144,15 @@ public class AircraftConfigService {
 
     private static <T> List<T> orEmpty(List<T> list) {
         return list == null ? Collections.<T>emptyList() : list;
+    }
+
+    /** 机型是查询路由的必要条件：缺失或空白时直接拒绝，避免误落到全量扫描 */
+    private static String requireModel(String modelCode) {
+        String modelKey = modelCode == null ? null : modelCode.trim();
+        if (modelKey == null || modelKey.isEmpty()) {
+            throw new IllegalArgumentException("机型不能为空");
+        }
+        return modelKey;
     }
 
     // ==================== 外源单机查询（带异常隔离） ====================
@@ -309,17 +192,6 @@ public class AircraftConfigService {
         return planes;
     }
 
-    /** 兜底 join：正常情况下 future 内的 try/catch 已保证不抛异常 */
-    private List<Aircraft> joinPlanesSafe(CompletableFuture<List<Aircraft>> future, String label) {
-        try {
-            List<Aircraft> list = future.join();
-            return list == null ? Collections.<Aircraft>emptyList() : list;
-        } catch (Exception e) {
-            log.warn("{}单机聚合任务异常，已跳过该数据源: {}", label, e.getMessage());
-            return Collections.emptyList();
-        }
-    }
-
     public AircraftModel getModel(String modelCode) {
         return aircraftModelMapper.selectById(modelCode);
     }
@@ -354,34 +226,23 @@ public class AircraftConfigService {
     // ==================== 飞机单机管理 ====================
 
     /**
-     * 查询单机列表。
+     * 查询机型下的单机列表：按机型路由到唯一平台。
      *
-     * <p><b>不传 modelCode</b>：本地 aircraft_config 行在前，随后依次拼接航新、633 平台的单机，
-     * 跨源不去重 —— 与改造前完全一致。</p>
-     *
-     * <p><b>传 modelCode</b>：查平台路由索引确定归属，只向命中的那一个源发请求。
-     * 命中本地则只查本地表；命中三方则把合成码还原成真实的 {@code airplaneType} 再发出去。
-     * 未命中索引时返回空列表并告警，<b>不回落</b>其它源。</p>
+     * <p>机型必须提供 —— 查平台路由索引确定归属，只向命中的那一个源发请求；
+     * 命中三方则把合成码还原成真实的 {@code airplaneType} 再发出去。未命中索引、
+     * 或命中的平台当前不可达（保活失败）时回落本地表，不再向三方发请求。</p>
      *
      * <p>第三方行的 {@code aircraftNumber} 取原 {@code airplaneNum}、{@code modelCode} 取原
      * {@code airplaneType}；airline / configVersion / status / createdAt 固定为 {@code "-"}。
      * 这些实例仅用于响应，不参与任何持久化。</p>
      */
     public List<Aircraft> listPlanes(String modelCode) {
-        String modelKey = modelCode == null ? null : modelCode.trim();
-        if (modelKey == null || modelKey.isEmpty()) {
-            // 不带机型条件：保持既有行为，并发查三源后拼接，不碰索引
-            return listAllPlanes();
-        }
-
+        String modelKey = requireModel(modelCode);
         DataSource source = routeService.resolveModel(modelKey);
-        if (source == null) {
-            log.warn("机型 {} 不在平台路由索引中，返回空（不回落其它源）。"
-                            + "若这是刚新建的机型或应用刚启动，先调用 /aircraft/models 刷新索引",
-                    modelKey);
-            return Collections.emptyList();
-        }
-        if (source == DataSource.LOCAL) {
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，按本地机型查询", modelKey);
+            }
             // 本地机型的 modelCode 就是索引入参本身，直接拿来过滤本地表
             return orEmpty(listLocalPlanes(modelKey));
         }
@@ -407,35 +268,6 @@ public class AircraftConfigService {
         params.put("airplaneType", realAirplaneType);
         log.info("/aircraft/plane 机型 {} 定向到 {}，三方 airplaneType={}", modelKey, label, realAirplaneType);
         return orEmpty(queryPlanesSafe(clientFor(source), label, params));
-    }
-
-    /** 不带机型条件时的旧行为：并发查三源后拼接，跨源不去重 */
-    private List<Aircraft> listAllPlanes() {
-        Map<String, Object> params = Collections.emptyMap();
-
-        // 先派发两个外源请求，使其与下面的本地查询重叠执行
-        CompletableFuture<List<Aircraft>> hangxinFuture =
-                CompletableFuture.supplyAsync(() -> queryPlanesSafe(hangxinClient, LABEL_HANGXIN, params));
-        CompletableFuture<List<Aircraft>> sanSanFuture =
-                CompletableFuture.supplyAsync(() -> queryPlanesSafe(sanSanClient, LABEL_SANSAN, params));
-
-        // 本地查询内联执行：异常不吞，由控制器按既有逻辑返回 500
-        List<Aircraft> localPlanes = listLocalPlanes(null);
-
-        int localCount = localPlanes == null ? 0 : localPlanes.size();
-        List<Aircraft> merged = new ArrayList<>(localCount + 16);
-        if (localPlanes != null) {
-            merged.addAll(localPlanes);
-        }
-
-        List<Aircraft> hangxinPlanes = joinPlanesSafe(hangxinFuture, LABEL_HANGXIN);
-        List<Aircraft> sanSanPlanes = joinPlanesSafe(sanSanFuture, LABEL_SANSAN);
-        merged.addAll(hangxinPlanes);
-        merged.addAll(sanSanPlanes);
-
-        log.info("/aircraft/plane 聚合完成: 本地={}, 航新={}, 633={}, 合计={}",
-                localCount, hangxinPlanes.size(), sanSanPlanes.size(), merged.size());
-        return merged;
     }
 
     /** 数据源到客户端的映射，定向查询只剩一个源时用 */
@@ -496,17 +328,12 @@ public class AircraftConfigService {
      * 机型 → 机号内存关系返回，不再单独扫描其它平台。</p>
      */
     public List<String> listActiveAircraftNumbers(String modelCode) {
-        String modelKey = modelCode == null ? null : modelCode.trim();
-        if (modelKey == null || modelKey.isEmpty()) {
-            return Collections.emptyList();
-        }
+        String modelKey = requireModel(modelCode);
 
         DataSource source = routeService.resolveModel(modelKey);
         if (source == null) {
-            log.warn("机型 {} 不在平台路由索引中，返回空（不回落其它源）。"
-                            + "若这是刚新建的机型或应用刚启动，先调用 /aircraft/models 刷新索引",
-                    modelKey);
-            return Collections.emptyList();
+            log.warn("机型 {} 未命中平台路由，按本地机型查询机号", modelKey);
+            source = DataSource.LOCAL;
         }
 
         List<String> numbers;
@@ -560,30 +387,20 @@ public class AircraftConfigService {
     // ==================== 构型项目管理 ====================
 
     /**
-     * 查询构型项目列表：按 modelCode 定向到唯一平台，不做跨源拼接。
+     * 查询构型项目列表：按模型机型路由到唯一平台，不做跨源拼接。
      *
-     * <p><b>传了 modelCode</b>：先从 /aircraft/models 建立的平台路由索引查所属平台。
-     * 本地机型直接查 config_item；三方机型只请求所属平台构型接口，并用该机型关联的
-     * 机号集合过滤 {@code SSFJH}。未命中或关联机号为空时返回空，不回落其它平台。</p>
-     *
-     * <p><b>不传 modelCode</b>：保持全量行为，拉取航新、633 全部构型并拼接，本地行不参与。</p>
+     * <p>机型必须提供：查平台路由索引确定所属平台。本地机型直接查 config_item；
+     * 三方机型只请求所属平台构型接口，并用该机型关联的机号集合过滤 {@code SSFJH}。
+     * 未命中索引、或命中的平台当前不可达（保活失败）时回落本地构型。</p>
      */
     public List<ConfigItem> listItems(String modelCode) {
-        String modelKey = modelCode == null ? null : modelCode.trim();
-        if (modelKey == null || modelKey.isEmpty()) {
-            // 不传机型时保持全量查询语义。
-            return queryAllExternalConfigItems();
-        }
+        String modelKey = requireModel(modelCode);
 
         DataSource source = routeService.resolveModel(modelKey);
-        if (source == null) {
-            log.warn("机型 {} 不在平台路由索引中，构型查询返回空（不回落其它源）。"
-                            + "若这是刚新建的机型或应用刚启动，先调用 /aircraft/models 刷新索引",
-                    modelKey);
-            return Collections.emptyList();
-        }
-
-        if (source == DataSource.LOCAL) {
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，按本地机型查询构型", modelKey);
+            }
             return listLocalItems(modelKey);
         }
 
@@ -650,27 +467,6 @@ public class AircraftConfigService {
     }
 
     // ==================== 外源构型查询（带异常隔离） ====================
-
-    /**
-     * 并发拉取两个平台的三方构型全量，按 航新 → 633 顺序拼接，跨源不去重。
-     */
-    private List<ConfigItem> queryAllExternalConfigItems() {
-        CompletableFuture<List<ConfigItem>> hangxinFuture = CompletableFuture.supplyAsync(
-                () -> queryAllConfigItemsSafe(hangxinClient, LABEL_HANGXIN));
-        CompletableFuture<List<ConfigItem>> sanSanFuture = CompletableFuture.supplyAsync(
-                () -> queryAllConfigItemsSafe(sanSanClient, LABEL_SANSAN));
-
-        List<ConfigItem> hangxinItems = joinConfigSafe(hangxinFuture, LABEL_HANGXIN);
-        List<ConfigItem> sanSanItems = joinConfigSafe(sanSanFuture, LABEL_SANSAN);
-
-        List<ConfigItem> merged = new ArrayList<>(hangxinItems.size() + sanSanItems.size());
-        merged.addAll(hangxinItems);
-        merged.addAll(sanSanItems);
-
-        log.info("/aircraft/config-items 三方全量查询完成: 航新={}, 633={}, 合计={}",
-                hangxinItems.size(), sanSanItems.size(), merged.size());
-        return merged;
-    }
 
     /**
      * 单平台翻页取全：每页 {@code rows = DEFAULT_CONFIG_ROWS}，收齐 total / 空页 / 不满一页 /
@@ -769,17 +565,6 @@ public class AircraftConfigService {
             return Long.valueOf(value.trim());
         } catch (NumberFormatException e) {
             return null;
-        }
-    }
-
-    /** 兜底 join：正常情况下 future 内的 try/catch 已保证不抛异常 */
-    private List<ConfigItem> joinConfigSafe(CompletableFuture<List<ConfigItem>> future, String label) {
-        try {
-            List<ConfigItem> list = future.join();
-            return list == null ? Collections.<ConfigItem>emptyList() : list;
-        } catch (Exception e) {
-            log.warn("{}构型聚合任务异常，已跳过该数据源: {}", label, e.getMessage());
-            return Collections.emptyList();
         }
     }
 
@@ -951,13 +736,10 @@ public class AircraftConfigService {
     // ==================== 架次管理 ====================
 
     /**
-     * 查询架次列表。
+     * 查询架次列表：按机型路由，机号用于过滤。
      *
-     * <p><b>不传 aircraftNumber</b>：本地 sortie 行在前，随后依次拼接航新、633 平台的架次，
-     * 跨源不去重 —— 与改造前完全一致。</p>
-     *
-     * <p><b>传 aircraftNumber</b>：查平台路由索引确定归属，只向命中的那一个源发请求。
-     * 未命中索引时返回空列表并告警，<b>不回落</b>其它源。</p>
+     * <p>机型必须提供 —— 先按机型解析归属平台，再限定到该机号。命中本地（或机型未命中路由、
+     * 或命中平台当前不可达）时只查本地 sortie 表；命中三方则只向该平台发一次架次请求。</p>
      *
      * <p>每行都带 {@code sortieKey} —— 跨源的架次统一标识（本地 = {@code sortieId} 的字符串，
      * 三方 = 平台原始 id），下游时序查询按它定向。</p>
@@ -968,53 +750,29 @@ public class AircraftConfigService {
      * 字段形态与本地行一致（flightDate 只放日期、startTime/endTime 只放时刻）。
      * 这些实例仅用于响应，不参与任何持久化。</p>
      */
-    public List<Sortie> listSorties(String aircraftNumber) {
+    public List<Sortie> listSorties(String modelCode, String aircraftNumber) {
+        String modelKey = requireModel(modelCode);
         String number = aircraftNumber == null ? null : aircraftNumber.trim();
-        if (number == null || number.isEmpty()) {
-            // 不带机号条件：保持既有行为，并发查三源后拼接，不碰索引
-            return listAllSorties();
+
+        DataSource source = routeService.resolveModel(modelKey);
+        if (source == null || source == DataSource.LOCAL) {
+            if (source == null) {
+                log.warn("机型 {} 未命中平台路由，按本地机型查询架次", modelKey);
+            }
+            return listLocalSortiesWithRoute(number, modelKey);
         }
 
-        PlatformRouteService.AircraftRef ref = ensureAircraftRoute(number);
+        PlatformRouteService.AircraftRef ref = ensureAircraftRoute(source, modelKey, number);
         if (ref == null) {
-            log.warn("机号 {} 不在平台路由索引中，返回空（不回落其它源）。"
-                            + "请先按机型调用 /aircraft/aircraft-numbers 加载该平台的单机关系",
-                    number);
+            log.warn("机号 {} 在 {} 下没有登记，架次查询返回空", number, source.getLabel());
             return Collections.emptyList();
-        }
-        DataSource source = ref.getSource();
-        if (source == DataSource.LOCAL) {
-            List<Sortie> sorties = orEmpty(listLocalSorties(number));
-            List<PlatformRouteService.SortieRef> refs = new ArrayList<>(sorties.size());
-            for (Sortie sortie : sorties) {
-                if (sortie != null) {
-                    refs.add(PlatformRouteService.SortieRef.local(
-                            sortie.getSortieId(), ref.getModelKey(), number));
-                }
-            }
-            routeService.replaceSorties(DataSource.LOCAL, number, refs);
-            for (Sortie sortie : sorties) {
-                ConfigDataMapping mapping = getMappingBySortie(sortie.getSortieId());
-                if (mapping != null && mapping.getCsvTableName() != null) {
-                    try {
-                        routeService.bindTable(
-                                PlatformRouteService.localSortieKey(sortie.getSortieId()),
-                                mapping.getCsvTableName());
-                    } catch (IllegalArgumentException e) {
-                        log.warn("恢复本地CSV表映射失败: sortieId={}, table={}, reason={}",
-                                sortie.getSortieId(), mapping.getCsvTableName(), e.getMessage());
-                    }
-                }
-            }
-            return sorties;
         }
         // BaseExternalClient.querySorties 仅在 params 取值非 null 时才拼接该查询参数
         Map<String, Object> params = new HashMap<>();
         params.put("airplaneType", ref.getRealAirplaneType());
         params.put("airplaneNum", number);
         String label = source.getLabel();
-        log.info("/aircraft/sorties 机号 {}（机型 {}）定向到 {}",
-                number, ref.getModelKey(), label);
+        log.info("/aircraft/sorties 机号 {}（机型 {}）定向到 {}", number, ref.getModelKey(), label);
         try {
             List<ExternalSortieData> raw = clientFor(source).querySorties(params);
             routeService.replaceSorties(source, number, toSortieRefs(source, raw));
@@ -1025,78 +783,72 @@ public class AircraftConfigService {
         }
     }
 
+    /** 本地分支：查本地 sortie 表并把架次与 CSV 表绑定关系同步进内存树 */
+    private List<Sortie> listLocalSortiesWithRoute(String aircraftNumber, String modelKey) {
+        List<Sortie> sorties = orEmpty(listLocalSorties(aircraftNumber));
+        if (aircraftNumber != null && !aircraftNumber.isEmpty()) {
+            List<PlatformRouteService.SortieRef> refs = new ArrayList<>(sorties.size());
+            for (Sortie sortie : sorties) {
+                if (sortie != null) {
+                    refs.add(PlatformRouteService.SortieRef.local(
+                            sortie.getSortieId(), modelKey, aircraftNumber));
+                }
+            }
+            routeService.replaceSorties(DataSource.LOCAL, aircraftNumber, refs);
+        }
+        for (Sortie sortie : sorties) {
+            ConfigDataMapping mapping = getMappingBySortie(sortie.getSortieId());
+            if (mapping != null && mapping.getCsvTableName() != null) {
+                try {
+                    routeService.bindTable(
+                            PlatformRouteService.localSortieKey(sortie.getSortieId()),
+                            mapping.getCsvTableName());
+                } catch (IllegalArgumentException e) {
+                    log.warn("恢复本地CSV表映射失败: sortieId={}, table={}, reason={}",
+                            sortie.getSortieId(), mapping.getCsvTableName(), e.getMessage());
+                }
+            }
+        }
+        return sorties;
+    }
+
     /**
      * 架次查询前确保「机号 → 机型/平台」已进入内存树。
      *
-     * <p>正常前端会先调用 /aircraft/aircraft-numbers；直接进入架次页面时，
-     * 这里按机号做一次懒加载，查到后立即增量登记，不扫描所有平台的架次接口。</p>
+     * <p>机型已知，这里只在该平台内按机号补一次懒加载，不扫描其它平台。</p>
      */
-    private PlatformRouteService.AircraftRef ensureAircraftRoute(String aircraftNumber) {
+    private PlatformRouteService.AircraftRef ensureAircraftRoute(DataSource source, String modelKey,
+                                                                 String aircraftNumber) {
+        if (aircraftNumber == null || aircraftNumber.isEmpty()) {
+            return null;
+        }
         PlatformRouteService.AircraftRef existing = routeService.resolveAircraftRef(aircraftNumber);
-        if (existing != null) {
+        if (existing != null && existing.getSource() == source) {
             return existing;
         }
 
-        Aircraft local = aircraftConfigMapper.selectById(aircraftNumber);
-        if (local != null) {
-            routeService.addAircraft(DataSource.LOCAL, local.getModelCode(), aircraftNumber);
-            return routeService.resolveAircraftRef(aircraftNumber);
+        Map<String, Object> params = new HashMap<>();
+        params.put("airplaneNum", aircraftNumber);
+        String realAirplaneType = routeService.realAirplaneType(modelKey);
+        if (realAirplaneType != null) {
+            params.put("airplaneType", realAirplaneType);
         }
-
-        for (DataSource source : Arrays.asList(DataSource.HANGXIN, DataSource.SAN_SAN)) {
-            Map<String, Object> params = new HashMap<>();
-            params.put("airplaneNum", aircraftNumber);
-            try {
-                List<ExternalAircraftData> raw = clientFor(source).queryAircrafts(params);
-                for (ExternalAircraftData aircraft : orEmpty(raw)) {
-                    if (aircraft == null || !aircraftNumber.equals(aircraft.getAirplaneNum())) {
-                        continue;
-                    }
-                    Set<String> modelKeys = routeService.modelKeysByAirplaneType(
-                            source, aircraft.getAirplaneType());
-                    for (String modelKey : modelKeys) {
-                        routeService.addAircraft(source, modelKey, aircraftNumber);
-                    }
-                    if (!modelKeys.isEmpty()) {
-                        log.info("架次查询前已补全机号 {} 的平台路由: {}", aircraftNumber, source.getLabel());
-                        return routeService.resolveAircraftRef(aircraftNumber);
-                    }
+        try {
+            List<ExternalAircraftData> raw = clientFor(source).queryAircrafts(params);
+            for (ExternalAircraftData aircraft : orEmpty(raw)) {
+                if (aircraft == null || !aircraftNumber.equals(aircraft.getAirplaneNum())) {
+                    continue;
                 }
-            } catch (Exception e) {
-                log.warn("{}按机号 {} 补全单机路由失败: {}",
-                        source.getLabel(), aircraftNumber, e.getMessage());
+                for (String actualModelKey : routeService.modelKeys(modelKey)) {
+                    routeService.addAircraft(source, actualModelKey, aircraftNumber);
+                }
+                log.info("架次查询前已补全机号 {} 的平台路由: {}", aircraftNumber, source.getLabel());
+                return routeService.resolveAircraftRef(aircraftNumber);
             }
+        } catch (Exception e) {
+            log.warn("{}按机号 {} 补全单机路由失败: {}", source.getLabel(), aircraftNumber, e.getMessage());
         }
         return null;
-    }
-
-    /** 不带机号条件时的旧行为：并发查三源后拼接，跨源不去重 */
-    private List<Sortie> listAllSorties() {
-        Map<String, Object> params = Collections.emptyMap();
-
-        // 先派发两个外源请求，使其与下面的本地查询重叠执行
-        CompletableFuture<List<Sortie>> hangxinFuture =
-                CompletableFuture.supplyAsync(() -> querySortiesSafe(hangxinClient, LABEL_HANGXIN, params));
-        CompletableFuture<List<Sortie>> sanSanFuture =
-                CompletableFuture.supplyAsync(() -> querySortiesSafe(sanSanClient, LABEL_SANSAN, params));
-
-        // 本地查询内联执行：异常不吞，由控制器按既有逻辑返回 500
-        List<Sortie> localSorties = listLocalSorties(null);
-
-        int localCount = localSorties == null ? 0 : localSorties.size();
-        List<Sortie> merged = new ArrayList<>(localCount + 16);
-        if (localSorties != null) {
-            merged.addAll(localSorties);
-        }
-
-        List<Sortie> hangxinSorties = joinSortiesSafe(hangxinFuture, LABEL_HANGXIN);
-        List<Sortie> sanSanSorties = joinSortiesSafe(sanSanFuture, LABEL_SANSAN);
-        merged.addAll(hangxinSorties);
-        merged.addAll(sanSanSorties);
-
-        log.info("/aircraft/sorties 聚合完成: 本地={}, 航新={}, 633={}, 合计={}",
-                localCount, hangxinSorties.size(), sanSanSorties.size(), merged.size());
-        return merged;
     }
 
     /** 仅查本地 sortie 表，按架次ID降序；aircraftNumber 非空时按机号过滤 */
@@ -1121,17 +873,6 @@ public class AircraftConfigService {
     }
 
     // ==================== 外源架次查询（带异常隔离） ====================
-
-    /** 单平台查询：未配置 / 不可达 / 超时 / HTTP 4xx-5xx / 解析异常均在此吞掉 */
-    private List<Sortie> querySortiesSafe(BaseExternalClient client, String label,
-                                          Map<String, Object> params) {
-        try {
-            return toSorties(client.querySorties(params));
-        } catch (Exception e) {
-            log.warn("{}架次查询失败，已跳过该数据源: {}", label, e.getMessage());
-            return Collections.emptyList();
-        }
-    }
 
     /**
      * 第三方行转为响应载体：sortieId = id，aircraftNumber = airplaneNum，sortieNumber = flightNum；
@@ -1286,17 +1027,6 @@ public class AircraftConfigService {
         } catch (NumberFormatException e) {
             // 三方架次ID通常是UUID，sortieId 仅兼容数字形态的旧数据。
             return null;
-        }
-    }
-
-    /** 兜底 join：正常情况下 future 内的 try/catch 已保证不抛异常 */
-    private List<Sortie> joinSortiesSafe(CompletableFuture<List<Sortie>> future, String label) {
-        try {
-            List<Sortie> list = future.join();
-            return list == null ? Collections.<Sortie>emptyList() : list;
-        } catch (Exception e) {
-            log.warn("{}架次聚合任务异常，已跳过该数据源: {}", label, e.getMessage());
-            return Collections.emptyList();
         }
     }
 

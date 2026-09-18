@@ -95,7 +95,7 @@ public class UnifiedSortieController {
                     "**airplaneType**：本地按 modelCode 模糊匹配；航新/633 按 airplaneType 精确匹配。")
     @GetMapping("/model/query")
     public ResponseEntity<ApiResult<List<UnifiedModelResponse>>> queryModels(
-            @RequestParam(value = "airplaneType", required = false) String airplaneType) {
+            @RequestParam(value = "airplaneType") String airplaneType) {
         UnifiedModelRequest request = new UnifiedModelRequest();
         request.setAirplaneType(airplaneType);
         ApiResult<List<UnifiedModelResponse>> result = unifiedModelService.queryModelsSafe(request);
@@ -118,7 +118,7 @@ public class UnifiedSortieController {
                     "**响应说明**：data 为各源直接拼接，不做跨源去重，同号飞机可能来自多个来源，以 source 字段区分；hangxin/sansan/local 分别记录各源的查询条数和状态。")
     @GetMapping("/aircraft/query")
     public ResponseEntity<ApiResult<List<UnifiedAircraftResponse>>> queryAircraft(
-            @RequestParam(value = "airplaneType", required = false) String airplaneType,
+            @RequestParam(value = "airplaneType") String airplaneType,
             @RequestParam(value = "airplaneNum", required = false) String airplaneNum) {
         UnifiedAircraftRequest request = new UnifiedAircraftRequest();
         request.setAirplaneType(airplaneType);
@@ -144,7 +144,7 @@ public class UnifiedSortieController {
                     "**响应说明**：data 为各源直接拼接，不做跨源去重，以 source 字段区分来源。")
     @GetMapping("/config/query")
     public ResponseEntity<ApiResult<List<UnifiedConfigResponse>>> queryConfigItems(
-            @RequestParam(value = "modelCode", required = false) String modelCode,
+            @RequestParam(value = "modelCode") String modelCode,
             @RequestParam(value = "pageNum", required = false) Integer pageNum,
             @RequestParam(value = "pageSize", required = false) Integer pageSize) {
         UnifiedConfigRequest request = new UnifiedConfigRequest();
@@ -158,23 +158,20 @@ public class UnifiedSortieController {
     /**
      * 聚合查询时序数据（已废弃）。
      *
-     * @deprecated 请改用 {@code POST /csv/query-timeseries}：按架次定位三个数据源，
+     * @deprecated 请改用 {@code POST /csv/query-timeseries}：按机型 + 架次定位数据源，
      *             只返回实际有数据的那个源，响应体为统一的 timestamps + parameters。
      */
     @Deprecated
     @Operation(summary = "【已废弃】聚合查询时序数据",
             deprecated = true,
             description = "**⚠️ 已废弃**，请改用 `POST /csv/query-timeseries`：" +
-                    "请求体为 `sortieId` / `aircraftNumber` / `sortieNumber` / `paralist` / `samplingRate`，" +
+                    "请求体为 `airplaneType`（机型，必填）/ `sortieId` / `paralist` / `samplingRate`，" +
                     "响应体为统一的 `data.timestamps` + `data.parameters[{name, values}]`，" +
-                    "且按机号/架次过滤后只返回有数据的那个平台（优先级 本地 → 航新 → 633）。\n\n" +
-                    "**（历史说明）** 查询本地、633 和航新三个数据源的时序数据。\n\n" +
-                    "**注意**：本地 CSV 文件以 base64 编码放入 data 列表。\n" +
-                    "data 为异构列表：[{本地文件(base64)}, {633返回}, {航新返回}]。")
+                    "后端按机型路由到唯一平台，未命中或平台不可达时回落本地。")
     @PostMapping("/timeseries/query")
     public ResponseEntity<ApiResult<List<Object>>> queryTimeSeries(
             @RequestBody UnifiedTimeSeriesRequest request) {
-        ApiResult<List<Object>> result = unifiedTimeSeriesService.queryTimeSeries(request);
-        return ResponseEntity.ok(result);
+        return ResponseEntity.status(410)
+                .body(ApiResult.error(410, "接口已废弃，请改用 POST /csv/query-timeseries"));
     }
 }

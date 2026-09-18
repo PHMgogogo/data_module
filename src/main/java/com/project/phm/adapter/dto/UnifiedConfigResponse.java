@@ -3,8 +3,6 @@ package com.project.phm.adapter.dto;
 import com.project.phm.entity.ConfigItem;
 import io.swagger.v3.oas.annotations.media.Schema;
 
-import java.util.Map;
-
 /**
  * 统一单机构型查询响应行 — 三个数据源的字段并集。
  * 不做跨源去重合并，每条记录标记来源供前端区分。
@@ -85,38 +83,5 @@ public class UnifiedConfigResponse {
         r.chapterCode = item.getAtaChapter();
         r.partNumber = item.getPartNumber();
         return r;
-    }
-
-    /**
-     * 从外部（633/航新）返回的 data 条目（Map）构造统一的响应行。
-     *
-     * <p>兼容外部字段名大小写：优先精确匹配 GXBS/SJGXBS/GXMC/SSFJH/JJH/AZWZ，
-     * 找不到再做一次忽略大小写的查找。外部返回的这六类字段可能缺失（留空），
-     * 也可能返回更多其它字段——除这六类外一概忽略，不会进入统一响应。</p>
-     */
-    public static UnifiedConfigResponse fromExternal(Map<String, Object> row, String source) {
-        if (row == null) return null;
-        UnifiedConfigResponse r = new UnifiedConfigResponse();
-        r.source = source;
-        r.nodeId = pick(row, "GXBS");
-        r.parentNodeId = pick(row, "SJGXBS");
-        r.nodeName = pick(row, "GXMC");
-        r.nodeType = "CONFIG";
-        r.aircraftNo = pick(row, "SSFJH");
-        r.equipmentNo = pick(row, "JJH");
-        r.installPosition = pick(row, "AZWZ");
-        return r;
-    }
-
-    /** 按目标字段名取值（忽略大小写），仅取首个非空值；无匹配返回 null。 */
-    private static String pick(Map<String, Object> row, String key) {
-        Object exact = row.get(key);
-        if (exact != null) return exact.toString();
-        for (Map.Entry<String, Object> e : row.entrySet()) {
-            if (e.getKey() != null && e.getKey().equalsIgnoreCase(key) && e.getValue() != null) {
-                return e.getValue().toString();
-            }
-        }
-        return null;
     }
 }

@@ -31,7 +31,6 @@ public class SchemaInitializer {
         createConfigItemTable();
         createConfigDataMappingTable();
         createSortieTable();
-        createHealthRecordTable();
         createExternalPlatformTable();
         log.info("=== 飞机构型相关表结构初始化完成 ===");
     }
@@ -136,27 +135,6 @@ public class SchemaInitializer {
                 + ")";
         jdbcTemplate.execute(sql);
         log.info("表 sortie 已就绪");
-    }
-
-    /**
-     * 健康记录表（诊断/评价/预测结果）
-     */
-    private void createHealthRecordTable() {
-        String sql = "CREATE TABLE IF NOT EXISTS health_record ("
-                + "record_id INT IDENTITY(1,1) NOT NULL, "
-                + "aircraft_number VARCHAR(20), "
-                + "item_id INT, "
-                + "record_type VARCHAR(20), "
-                + "indicator_name VARCHAR(200), "
-                + "indicator_value VARCHAR(500), "
-                + "confidence VARCHAR(20), "
-                + "record_time DATETIME, "
-                + "data_source_table VARCHAR(200), "
-                + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP, "
-                + "PRIMARY KEY (record_id)"
-                + ")";
-        jdbcTemplate.execute(sql);
-        log.info("表 health_record 已就绪");
     }
 
     /**

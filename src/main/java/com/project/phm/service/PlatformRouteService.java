@@ -188,6 +188,14 @@ public class PlatformRouteService {
     private final Map<DataSource, PlatformNode> platforms = new EnumMap<>(DataSource.class);
     private volatile RouteIndex index = RouteIndex.empty();
 
+    /**
+     * 三方平台保活状态 —— 由每 5 秒的机型轮询兼作心跳维护。
+     *
+     * <p>拉取成功即视为可达；失败（未配置 / 超时 / 异常）即置为不可达，同时清空该平台的机型映射。
+     * 查询路由时不可达的平台会被直接跳过，不再向它发请求。</p>
+     */
+    private final Map<DataSource, Boolean> reachable = new EnumMap<>(DataSource.class);
+
     /** 不可变查询快照。 */
     private static final class RouteIndex {
 
@@ -231,6 +239,60 @@ public class PlatformRouteService {
                     Collections.emptyMap(), Collections.emptyMap(),
                     Collections.emptyMap(), Collections.emptyMap());
         }
+    }
+
+    // ==================== 三方平台保活状态 ====================
+
+    /**
+     * 轮询成功：标记平台可达并替换其全部机型。
+     *
+     * <p>与 {@link #replaceModels} 的区别只在语义 —— 一次成功的心跳同时完成保活与机型刷新。</p>
+     */
+    public synchronized void markReachable(DataSource source, Collection<ModelDefinition> models) {
+        if (source == null || !source.isExternal()) {
+            return;
+        }
+        reachable.put(source, Boolean.TRUE);
+        replaceModels(source, models);
+    }
+
+    /**
+     * 轮询失败：标记平台不可达并清空其机型子树。
+     *
+     * <p>清空后该平台下的机型路由全部失效，后续查询不会再被路由到它。</p>
+     */
+    public synchronized void markUnreachable(DataSource source) {
+        if (source == null || !source.isExternal()) {
+            return;
+        }
+        reachable.put(source, Boolean.FALSE);
+        platforms.remove(source);
+        refreshIndex();
+        log.warn("{}保活失败，已置为不可达并清空其机型映射", source.getLabel());
+    }
+
+    /** 平台是否可达；本地恒为可达，未知状态视为可达（避免启动初期误判） */
+    public boolean isReachable(DataSource source) {
+        if (source == null) {
+            return false;
+        }
+        if (!source.isExternal()) {
+            return true;
+        }
+        return !Boolean.FALSE.equals(reachable.get(source));
+    }
+
+    /** 某平台当前在内存中的全部机型定义；平台不可达或未登记时返回空集合 */
+    public synchronized Collection<ModelDefinition> modelsOf(DataSource source) {
+        PlatformNode platform = source == null ? null : platforms.get(source);
+        if (platform == null || !isReachable(source)) {
+            return Collections.emptyList();
+        }
+        List<ModelDefinition> definitions = new ArrayList<>(platform.models.size());
+        for (ModelNode model : platform.models.values()) {
+            definitions.add(new ModelDefinition(model.modelKey, model.realAirplaneType));
+        }
+        return definitions;
     }
 
     // ==================== 增量更新入口 ====================
@@ -466,13 +528,27 @@ public class PlatformRouteService {
 
     // ==================== 查询 ====================
 
+    /**
+     * 机型归属平台解析，查询路由的唯一入口。
+     *
+     * <p>命中三方平台但该平台当前不可达（保活失败）时，视为未命中，返回 {@link DataSource#LOCAL}
+     * —— 调用方据此回落本地，不再向不可达平台发请求。</p>
+     *
+     * @return 归属平台；机型不存在时返回 {@code null}
+     */
     public DataSource resolveModel(String modelCode) {
         String key = normalize(modelCode);
         if (key == null) {
             return null;
         }
-        DataSource exact = index.modelToPlatform.get(key);
-        return exact != null ? exact : index.modelAliasToPlatform.get(key);
+        DataSource source = index.modelToPlatform.get(key);
+        if (source == null) {
+            source = index.modelAliasToPlatform.get(key);
+        }
+        if (source == null) {
+            return null;
+        }
+        return isReachable(source) ? source : DataSource.LOCAL;
     }
 
     /** 将合成码或原始 airplaneType 展开为实际机型键集合。 */
@@ -489,22 +565,6 @@ public class PlatformRouteService {
             return Collections.emptySet();
         }
         return Collections.unmodifiableSet(new LinkedHashSet<>(aliases));
-    }
-
-    /** 某平台内真实 airplaneType 对应的机型键集合。 */
-    public Set<String> modelKeysByAirplaneType(DataSource source, String airplaneType) {
-        PlatformNode platform = source == null ? null : platforms.get(source);
-        String type = normalize(airplaneType);
-        if (platform == null || type == null) {
-            return Collections.emptySet();
-        }
-        Set<String> result = new LinkedHashSet<>();
-        for (ModelNode model : platform.models.values()) {
-            if (type.equals(model.realAirplaneType) || type.equals(model.modelKey)) {
-                result.add(model.modelKey);
-            }
-        }
-        return result;
     }
 
     public Set<String> aircraftNumbersForModel(String modelCode) {
@@ -542,11 +602,6 @@ public class PlatformRouteService {
         return index.modelAliasToPlatform.containsKey(key) ? key : null;
     }
 
-    public DataSource resolveAircraft(String aircraftNumber) {
-        AircraftRef ref = resolveAircraftRef(aircraftNumber);
-        return ref == null ? null : ref.getSource();
-    }
-
     public AircraftRef resolveAircraftRef(String aircraftNumber) {
         String key = normalize(aircraftNumber);
         return key == null ? null : index.aircraftToRef.get(key);
@@ -560,46 +615,6 @@ public class PlatformRouteService {
     public SortieRef resolveParameterGroup(String parameterGroupId) {
         String key = normalize(parameterGroupId);
         return key == null ? null : index.parameterGroupToRef.get(key);
-    }
-
-    public boolean isReady() {
-        return !index.modelToPlatform.isEmpty();
-    }
-
-    public String describe() {
-        StringBuilder detail = new StringBuilder();
-        int modelCount = 0;
-        int aircraftCount = 0;
-        int sortieCount = 0;
-        int tableCount = 0;
-        for (DataSource source : PRIORITY) {
-            PlatformNode platform = platforms.get(source);
-            int models = platform == null ? 0 : platform.models.size();
-            int aircraft = 0;
-            int sorties = 0;
-            int tables = 0;
-            if (platform != null) {
-                for (ModelNode model : platform.models.values()) {
-                    aircraft += model.aircraft.size();
-                    for (AircraftNode plane : model.aircraft.values()) {
-                        sorties += plane.sorties.size();
-                        for (SortieNode sortie : plane.sorties.values()) {
-                            tables += sortie.tables.size();
-                        }
-                    }
-                }
-            }
-            modelCount += models;
-            aircraftCount += aircraft;
-            sortieCount += sorties;
-            tableCount += tables;
-            detail.append(source.getLabel()).append('=')
-                    .append(models).append('/').append(aircraft).append('/')
-                    .append(sorties).append('/').append(tables).append(' ');
-        }
-        return String.format("平台=%d, 机型=%d, 单机=%d, 架次=%d, 表=%d [%s]",
-                platforms.size(), modelCount, aircraftCount, sortieCount, tableCount,
-                detail.toString().trim());
     }
 
     // ==================== 快照构建 ====================
