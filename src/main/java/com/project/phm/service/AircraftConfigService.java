@@ -391,7 +391,7 @@ public class AircraftConfigService {
      *
      * <p>机型必须提供：查平台路由索引确定所属平台。本地机型直接查 config_item；
      * 三方机型只请求所属平台构型接口，并用该机型关联的机号集合过滤 {@code SSFJH}。
-     * 未命中索引、或命中的平台当前不可达（保活失败）时回落本地构型。</p>
+     * 如果构型页先于机号接口调用，本方法会先按需加载该机型的机号映射。</p>
      */
     public List<ConfigItem> listItems(String modelCode) {
         String modelKey = requireModel(modelCode);
@@ -406,9 +406,14 @@ public class AircraftConfigService {
 
         Set<String> aircraftNumbers = routeService.aircraftNumbersForModel(modelKey);
         if (aircraftNumbers.isEmpty()) {
-            log.warn("机型 {} 属于 {}，但内存中没有关联机号，无法过滤 SSFJH，返回空",
-                    modelKey, source.getLabel());
-            return Collections.emptyList();
+            // 构型页可能比机号选择步骤更早调用，这里按需补全“机型→机号”映射。
+            List<String> loaded = listActiveAircraftNumbers(modelKey);
+            aircraftNumbers = new LinkedHashSet<>(loaded);
+            if (aircraftNumbers.isEmpty()) {
+                log.warn("机型 {} 属于 {}，补全机号后仍为空，无法过滤 SSFJH，返回空",
+                        modelKey, source.getLabel());
+                return Collections.emptyList();
+            }
         }
 
         List<ConfigItem> platformItems = queryAllConfigItemsSafe(clientFor(source), source.getLabel());

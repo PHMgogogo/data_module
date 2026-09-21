@@ -3,7 +3,6 @@ package com.project.phm.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.project.phm.adapter.dto.DataSource;
 import com.project.phm.adapter.dto.UnifiedTimeSeriesRequest;
-import com.project.phm.entity.ConfigItem;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
@@ -97,9 +96,9 @@ class PlatformRouteServiceTest {
 
     @Test
     void filtersExternalConfigItemsByModelAircraftNumbers() {
-        ConfigItem matched = configItem("0003");
-        ConfigItem other = configItem("0004");
-        ConfigItem blank = configItem(null);
+        com.project.phm.entity.ConfigItem matched = configItem("0003");
+        com.project.phm.entity.ConfigItem other = configItem("0004");
+        com.project.phm.entity.ConfigItem blank = configItem(null);
 
         assertEquals(Collections.singletonList(matched),
                 AircraftConfigService.filterConfigItemsByAircraftNumbers(
@@ -120,8 +119,8 @@ class PlatformRouteServiceTest {
         assertEquals("sortie-id-2", legacyRequest.resolveSortieKey());
     }
 
-    private static ConfigItem configItem(String ssfjh) {
-        ConfigItem item = new ConfigItem();
+    private static com.project.phm.entity.ConfigItem configItem(String ssfjh) {
+        com.project.phm.entity.ConfigItem item = new com.project.phm.entity.ConfigItem();
         item.setModelCode(ssfjh);
         item.setEquipmentName("item-" + ssfjh);
         return item;
