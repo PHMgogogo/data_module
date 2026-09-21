@@ -1,6 +1,7 @@
 package com.project.phm.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -24,6 +25,11 @@ public class AircraftModel {
 
     @Schema(description = "创建时间", example = "2026-05-23 10:00:00", accessMode = Schema.AccessMode.READ_ONLY)
     private String createdAt;       // 创建时间
+
+    @Schema(description = "数据来源：local / hangxin / 633",
+            example = "local", accessMode = Schema.AccessMode.READ_ONLY)
+    @TableField(exist = false)
+    private String source;
 
     public String getModelCode() {
         return modelCode;
@@ -55,5 +61,13 @@ public class AircraftModel {
 
     public void setCreatedAt(String createdAt) {
         this.createdAt = createdAt;
+    }
+
+    public String getSource() {
+        return source;
+    }
+
+    public void setSource(String source) {
+        this.source = source;
     }
 }

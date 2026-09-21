@@ -33,6 +33,7 @@ public class AircraftController {
     @Operation(summary = "获取所有机型列表",
             description = "返回机型列表：本地 aircraft_model 表全部机型 + 航新 / 633 的机型。\n\n" +
                     "**合并规则**：跨源不去重，顺序为 本地 → 航新 → 633。\n" +
+                    "**来源字段**：每行 `source` 分别为 `local`、`hangxin`、`633`。\n" +
                     "**第三方行字段**：`modelCode` 为 `airplaneType:id`；`manufacturer` / `description` / `createdAt` 固定为 `\"-\"`。\n" +
                     "**数据来源**：三方机型由后端每 5 秒轮询三方「获取机型」接口维护在内存中，" +
                     "本接口只读内存快照；某平台保活失败（不可达）时其机型不出现在结果里。")

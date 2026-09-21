@@ -82,11 +82,18 @@ public class AircraftConfigService {
      */
     public List<AircraftModel> listModels() {
         List<AircraftModel> localModels = listLocalModels();
+        for (AircraftModel model : orEmpty(localModels)) {
+            if (model != null) {
+                model.setSource(sourceCode(DataSource.LOCAL));
+            }
+        }
         // 本地机型是查询的兜底路由，每次查询前同步一次，保证新建机型立即可路由
         routeService.replaceModels(DataSource.LOCAL, toLocalModelDefinitions(localModels));
 
-        List<AircraftModel> hangxinModels = toModels(routeService.modelsOf(DataSource.HANGXIN));
-        List<AircraftModel> sanSanModels = toModels(routeService.modelsOf(DataSource.SAN_SAN));
+        List<AircraftModel> hangxinModels = toModels(
+                DataSource.HANGXIN, routeService.modelsOf(DataSource.HANGXIN));
+        List<AircraftModel> sanSanModels = toModels(
+                DataSource.SAN_SAN, routeService.modelsOf(DataSource.SAN_SAN));
         int localCount = localModels == null ? 0 : localModels.size();
         List<AircraftModel> merged = new ArrayList<>(localCount + hangxinModels.size() + sanSanModels.size());
         if (localModels != null) {
@@ -123,7 +130,8 @@ public class AircraftConfigService {
     /**
      * 内存机型定义转为响应载体：modelCode = {@code airplaneType:id}，其余三字段为占位符。
      */
-    private List<AircraftModel> toModels(Collection<PlatformRouteService.ModelDefinition> definitions) {
+    private List<AircraftModel> toModels(DataSource source,
+                                         Collection<PlatformRouteService.ModelDefinition> definitions) {
         if (definitions == null || definitions.isEmpty()) {
             return Collections.emptyList();
         }
@@ -137,9 +145,20 @@ public class AircraftConfigService {
             model.setManufacturer(PLACEHOLDER);
             model.setDescription(PLACEHOLDER);
             model.setCreatedAt(PLACEHOLDER);
+            model.setSource(sourceCode(source));
             models.add(model);
         }
         return models;
+    }
+
+    private static String sourceCode(DataSource source) {
+        if (source == DataSource.HANGXIN) {
+            return "hangxin";
+        }
+        if (source == DataSource.SAN_SAN) {
+            return "633";
+        }
+        return "local";
     }
 
     private static <T> List<T> orEmpty(List<T> list) {
