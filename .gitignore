@@ -52,3 +52,5 @@ package-lock.json
 ### 本地配置（个人环境，不入库） ###
 .claude/
 local.properties
+### 项目文档（docs/ 下的接口文档入库，其余 *.md 仍忽略） ###
+!docs/*.md
