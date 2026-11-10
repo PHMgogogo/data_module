@@ -53,13 +53,14 @@ public class CsvService {
      * 上传CSV文件并入库，同时绑定到一个本地架次。
      *
      * @param file         CSV文件
-     * @param tableName    达梦表名（需以 csv_ 开头）
+     * @param tableName    达梦表名（可传文件名，统一规范化为 csv_ 开头的表名）
      * @param sortieId     本地架次ID（必填）
      * @return 处理结果
      */
     public Map<String, Object> uploadCsv(MultipartFile file, String tableName,
                                           Long sortieId) throws Exception {
         long startTime = System.currentTimeMillis();
+        tableName = CsvUtils.normalizeTableName(tableName);
 
         if (sortieId == null) {
             throw new IllegalArgumentException("sortieId 不能为空");
@@ -69,11 +70,6 @@ public class CsvService {
             throw new IllegalArgumentException("本地架次不存在: " + sortieId);
         }
         String aircraftNumber = sortie.getAircraftNumber();
-
-        // 验证表名
-        if (!CsvUtils.isValidTableName(tableName)) {
-            throw new IllegalArgumentException("表名必须以csv_开头");
-        }
 
         // 校验表名是否已存在
         if (dbUtils.tableExists(tableName)) {
@@ -626,6 +622,9 @@ public class CsvService {
      * <p><b>无时间戳列的表</b>：如果无法推断时间戳列，则 timestamps 返回空列表，
      * parameters.name 使用真实的列名，values 按行序排列。</p>
      *
+     * <p><b>时间轴列被显式请求</b>：若 paralist 中显式包含时间戳列（训练/推理把它当数据列用），
+     * 则该列除进 timestamps 外，也会以原始值出现在 parameters 中。</p>
+     *
      * @param tableName 表名（含 csv_ 前缀）
      * @param paralist  要查询的参数名列表
      * @return 统一时序响应
@@ -652,6 +651,9 @@ public class CsvService {
 
         // 2. 确定时间戳列（可能为 null）
         String timestampColumn = findTimestampColumn(tableName, allColumns);
+        // 时间轴列若被显式请求（训练/推理把它当数据列用），除进 timestamps 外也要进 parameters
+        boolean timestampRequested = timestampColumn != null && paralist != null
+                && paralist.stream().anyMatch(p -> p != null && p.equalsIgnoreCase(timestampColumn));
 
         // 3. 构建查询列集合：时间戳列（如有）+ 请求的参数列（去重）
         Set<String> queryCols = new LinkedHashSet<>();
@@ -690,7 +692,8 @@ public class CsvService {
         // 5. 提取各参数值序列
         List<ParameterEntry> parameters = new ArrayList<>();
         for (String col : queryCols) {
-            if (timestampColumn != null && col.equalsIgnoreCase(timestampColumn)) continue;
+            // 时间轴列默认只作 X 轴、不进 parameters；被显式请求时也返回原始值，供训练/推理取数
+            if (timestampColumn != null && col.equalsIgnoreCase(timestampColumn) && !timestampRequested) continue;
             List<Object> values = new ArrayList<>();
             for (Map<String, Object> row : rows) {
                 values.add(getValueIgnoreCase(row, col));

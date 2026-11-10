@@ -16,6 +16,11 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.math.BigDecimal;
+import java.math.RoundingMode;
+import java.time.Duration;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.stream.Collectors;
 
@@ -38,12 +43,18 @@ public class AircraftConfigService {
 
     /** 三方构型行的 itemType 固定值（GXMC 落在 equipmentName） */
     private static final String EXTERNAL_ITEM_TYPE = "EQUIPMENT";
+    private static final String TRACKED_ITEM_TYPE = "EQUIPMENT";
+    private static final DateTimeFormatter DATE_TIME_FORMATTER =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final BigDecimal SECONDS_PER_HOUR = BigDecimal.valueOf(3600);
 
     private final AircraftModelMapper aircraftModelMapper;
     private final AircraftConfigMapper aircraftConfigMapper;
     private final ConfigItemMapper configItemMapper;
     private final ConfigDataMappingMapper configDataMappingMapper;
     private final SortieMapper sortieMapper;
+    private final AircraftConfigItemLifeMapper aircraftConfigItemLifeMapper;
+    private final SortieLifeUsageMapper sortieLifeUsageMapper;
     private final HangxinSortieClient hangxinClient;
     private final SanSanSortieClient sanSanClient;
     private final PlatformRouteService routeService;
@@ -54,6 +65,8 @@ public class AircraftConfigService {
                                   ConfigItemMapper configItemMapper,
                                   ConfigDataMappingMapper configDataMappingMapper,
                                   SortieMapper sortieMapper,
+                                  AircraftConfigItemLifeMapper aircraftConfigItemLifeMapper,
+                                  SortieLifeUsageMapper sortieLifeUsageMapper,
                                   HangxinSortieClient hangxinClient,
                                   SanSanSortieClient sanSanClient,
                                   PlatformRouteService routeService,
@@ -63,6 +76,8 @@ public class AircraftConfigService {
         this.configItemMapper = configItemMapper;
         this.configDataMappingMapper = configDataMappingMapper;
         this.sortieMapper = sortieMapper;
+        this.aircraftConfigItemLifeMapper = aircraftConfigItemLifeMapper;
+        this.sortieLifeUsageMapper = sortieLifeUsageMapper;
         this.hangxinClient = hangxinClient;
         this.sanSanClient = sanSanClient;
         this.routeService = routeService;
@@ -310,6 +325,7 @@ public class AircraftConfigService {
         return aircraftConfigMapper.selectById(aircraftNumber);
     }
 
+    @Transactional
     public void addPlane(Aircraft aircraft) {
         if (aircraft.getAircraftNumber() == null || aircraft.getAircraftNumber().trim().isEmpty()) {
             throw new IllegalArgumentException("机号不能为空");
@@ -324,18 +340,36 @@ public class AircraftConfigService {
             aircraft.setStatus("active");
         }
         aircraftConfigMapper.insert(aircraft);
+        ensureAircraftConfigLives(aircraft.getAircraftNumber(), aircraft.getModelCode());
         routeService.addLocalAircraft(aircraft.getAircraftNumber(), aircraft.getModelCode());
     }
 
+    @Transactional
     public void removePlane(String aircraftNumber) {
         if (aircraftConfigMapper.selectById(aircraftNumber) == null) {
             throw new IllegalArgumentException("单机不存在: " + aircraftNumber);
         }
-        Long sortieCount = sortieMapper.selectCount(
-                Wrappers.<Sortie>lambdaQuery().eq(Sortie::getAircraftNumber, aircraftNumber));
-        if (sortieCount > 0) {
-            throw new IllegalArgumentException("请先删除该飞机的所有架次（共" + sortieCount + "个）");
+        List<Sortie> sorties = listLocalSorties(aircraftNumber);
+        for (Sortie sortie : orEmpty(sorties)) {
+            if (sortie == null || sortie.getSortieId() == null) {
+                continue;
+            }
+            restoreSortieLife(sortie.getSortieId());
+            configDataMappingMapper.delete(
+                    Wrappers.<ConfigDataMapping>lambdaQuery()
+                            .eq(ConfigDataMapping::getSortieId, sortie.getSortieId()));
+            sortieMapper.deleteById(sortie.getSortieId());
+            routeService.removeLocalSortie(sortie.getSortieId());
         }
+        List<AircraftConfigItemLife> lives = listLives(aircraftNumber);
+        for (AircraftConfigItemLife life : lives) {
+            sortieLifeUsageMapper.delete(
+                    Wrappers.<SortieLifeUsage>lambdaQuery()
+                            .eq(SortieLifeUsage::getLifeId, life.getLifeId()));
+        }
+        aircraftConfigItemLifeMapper.delete(
+                Wrappers.<AircraftConfigItemLife>lambdaQuery()
+                        .eq(AircraftConfigItemLife::getAircraftNumber, aircraftNumber));
         aircraftConfigMapper.deleteById(aircraftNumber);
         routeService.removeLocalAircraft(aircraftNumber);
     }
@@ -596,31 +630,94 @@ public class AircraftConfigService {
         return configItemMapper.selectById(itemId);
     }
 
+    @Transactional
     public Long addItem(ConfigItem item) {
+        String modelCode = trimToNull(item.getModelCode());
+        if (modelCode == null) {
+            throw new IllegalArgumentException("机型代码不能为空");
+        }
+        if (aircraftModelMapper.selectById(modelCode) == null) {
+            throw new IllegalArgumentException("机型不存在: " + modelCode);
+        }
+        item.setModelCode(modelCode);
         if (item.getParentItemId() != null) {
             ConfigItem parent = configItemMapper.selectById(item.getParentItemId());
             if (parent == null) {
                 throw new IllegalArgumentException("父级构型项目不存在");
             }
+            if (!modelCode.equals(parent.getModelCode())) {
+                throw new IllegalArgumentException("父级构型项目不属于当前机型");
+            }
         }
         if (item.getItemType() == null || item.getItemType().trim().isEmpty()) {
             item.setItemType("EQUIPMENT");
         }
+        item.setItemType(item.getItemType().trim().toUpperCase(Locale.ROOT));
+        if (TRACKED_ITEM_TYPE.equals(item.getItemType())) {
+            if (item.getDefaultLifeHours() == null
+                    || item.getDefaultLifeHours().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException("EQUIPMENT 必须填写大于 0 的初始寿命（小时）");
+            }
+            item.setDefaultLifeHours(item.getDefaultLifeHours().setScale(4, RoundingMode.HALF_UP));
+        } else {
+            item.setDefaultLifeHours(null);
+        }
         configItemMapper.insert(item);
+        if (TRACKED_ITEM_TYPE.equals(item.getItemType())) {
+            bindNewEquipmentToExistingAircraft(item);
+        }
         return item.getItemId();
     }
 
+    @Transactional
     public void removeItem(Long itemId) {
-        if (configItemMapper.selectById(itemId) == null) {
+        ConfigItem item = configItemMapper.selectById(itemId);
+        if (item == null) {
             throw new IllegalArgumentException("构型项目不存在: " + itemId);
         }
-        // 检查是否有子节点
-        Long childCount = configItemMapper.selectCount(
-                Wrappers.<ConfigItem>lambdaQuery().eq(ConfigItem::getParentItemId, itemId));
-        if (childCount > 0) {
-            throw new IllegalArgumentException("该构型项目下存在子项目，请先删除子项目");
+        List<ConfigItem> allItems = configItemMapper.selectList(
+                Wrappers.<ConfigItem>lambdaQuery()
+                        .eq(ConfigItem::getModelCode, item.getModelCode()));
+        List<Long> deleteIds = collectSubtreeItemIds(itemId, allItems);
+        List<AircraftConfigItemLife> lives = aircraftConfigItemLifeMapper.selectList(
+                Wrappers.<AircraftConfigItemLife>lambdaQuery()
+                        .in(AircraftConfigItemLife::getItemId, deleteIds));
+        if (!lives.isEmpty()) {
+            List<Long> lifeIds = lives.stream()
+                    .map(AircraftConfigItemLife::getLifeId)
+                    .collect(Collectors.toList());
+            Long usageCount = sortieLifeUsageMapper.selectCount(
+                    Wrappers.<SortieLifeUsage>lambdaQuery()
+                            .in(SortieLifeUsage::getLifeId, lifeIds));
+            if (usageCount > 0) {
+                throw new IllegalArgumentException(
+                        "该构型项目或其子项已有架次寿命使用记录，不能删除");
+            }
+            aircraftConfigItemLifeMapper.delete(
+                    Wrappers.<AircraftConfigItemLife>lambdaQuery()
+                            .in(AircraftConfigItemLife::getLifeId, lifeIds));
         }
-        configItemMapper.deleteById(itemId);
+        Collections.reverse(deleteIds);
+        configItemMapper.deleteBatchIds(deleteIds);
+    }
+
+    private List<Long> collectSubtreeItemIds(Long rootId, List<ConfigItem> allItems) {
+        List<Long> ids = new ArrayList<>();
+        Deque<Long> queue = new ArrayDeque<>();
+        queue.add(rootId);
+        while (!queue.isEmpty()) {
+            Long current = queue.removeFirst();
+            if (ids.contains(current)) {
+                continue;
+            }
+            ids.add(current);
+            for (ConfigItem item : allItems) {
+                if (current.equals(item.getParentItemId())) {
+                    queue.addLast(item.getItemId());
+                }
+            }
+        }
+        return ids;
     }
 
     /**
@@ -651,6 +748,7 @@ public class AircraftConfigService {
         nodeMap.put("equipmentName", node.getEquipmentName());
         nodeMap.put("partNumber", node.getPartNumber());
         nodeMap.put("itemType", node.getItemType());
+        nodeMap.put("defaultLifeHours", node.getDefaultLifeHours());
 
         List<ConfigItem> children = allItems.stream()
                 .filter(item -> node.getItemId().equals(item.getParentItemId()))
@@ -728,6 +826,13 @@ public class AircraftConfigService {
                         .eq(ConfigDataMapping::getSortieId, sortieId)
                         .orderByDesc(ConfigDataMapping::getCreatedAt));
         return mappings == null || mappings.isEmpty() ? null : mappings.get(0);
+    }
+
+    public List<ConfigDataMapping> listMappingsByItemId(Long itemId) {
+        return configDataMappingMapper.selectList(
+                Wrappers.<ConfigDataMapping>lambdaQuery()
+                        .eq(ConfigDataMapping::getItemId, itemId)
+                        .orderByDesc(ConfigDataMapping::getCreatedAt));
     }
 
     public ConfigDataMapping getMappingByTable(String csvTableName) {
@@ -1058,6 +1163,7 @@ public class AircraftConfigService {
         return sortieMapper.selectById(sortieId);
     }
 
+    @Transactional
     public void addSortie(Sortie sortie) {
         if (sortie.getAircraftNumber() == null || sortie.getAircraftNumber().trim().isEmpty()) {
             throw new IllegalArgumentException("机号不能为空");
@@ -1076,7 +1182,10 @@ public class AircraftConfigService {
                 throw new IllegalArgumentException("该单机下已存在相同架次号: " + sortie.getSortieNumber().trim());
             }
         }
+        applySortieWindow(sortie);
+        ensureAircraftConfigLives(sortie.getAircraftNumber(), aircraft.getModelCode());
         sortieMapper.insert(sortie);
+        deductSortieLife(sortie);
         // insert 后主键才回填，所以同步必须在 insert 之后
         routeService.addLocalSortie(sortie.getSortieId(), sortie.getAircraftNumber(),
                 aircraft.getModelCode());
@@ -1087,6 +1196,7 @@ public class AircraftConfigService {
         if (sortieMapper.selectById(sortieId) == null) {
             throw new IllegalArgumentException("架次不存在: " + sortieId);
         }
+        restoreSortieLife(sortieId);
         // 删除该架次下的所有数据关联（ConfigDataMapping）
         configDataMappingMapper.delete(
                 Wrappers.<ConfigDataMapping>lambdaQuery()
@@ -1094,6 +1204,394 @@ public class AircraftConfigService {
         // 删除架次
         sortieMapper.deleteById(sortieId);
         routeService.removeLocalSortie(sortieId);
+    }
+
+    /**
+     * 校验并补齐架次完整起止时间与持续小时数。
+     */
+    private void applySortieWindow(Sortie sortie) {
+        String startAt = trimToNull(sortie.getStartAt());
+        String endAt = trimToNull(sortie.getEndAt());
+        String flightDate = trimToNull(sortie.getFlightDate());
+        String startTime = trimToNull(sortie.getStartTime());
+        String endTime = trimToNull(sortie.getEndTime());
+
+        LocalDateTime start;
+        LocalDateTime end;
+        try {
+            if (startAt != null) {
+                start = LocalDateTime.parse(startAt, DATE_TIME_FORMATTER);
+            } else {
+                if (flightDate == null || startTime == null) {
+                    throw new IllegalArgumentException("架次必须填写飞行日期和开始时间");
+                }
+                start = LocalDateTime.parse(
+                        flightDate + " " + normalizeClockTime(startTime), DATE_TIME_FORMATTER);
+            }
+            if (endAt != null) {
+                end = LocalDateTime.parse(endAt, DATE_TIME_FORMATTER);
+            } else {
+                if (flightDate == null || endTime == null) {
+                    throw new IllegalArgumentException("架次必须填写飞行日期和结束时间");
+                }
+                end = LocalDateTime.parse(
+                        flightDate + " " + normalizeClockTime(endTime), DATE_TIME_FORMATTER);
+            }
+        } catch (IllegalArgumentException e) {
+            if (e.getMessage() != null && e.getMessage().startsWith("架次必须")) {
+                throw e;
+            }
+            throw new IllegalArgumentException("架次开始/结束时间格式必须为 yyyy-MM-dd HH:mm:ss");
+        }
+
+        if (!end.isAfter(start)) {
+            throw new IllegalArgumentException("架次结束时间必须晚于开始时间");
+        }
+        long seconds = Duration.between(start, end).getSeconds();
+        if (seconds <= 0) {
+            throw new IllegalArgumentException("架次时长必须大于 0");
+        }
+        sortie.setStartAt(start.format(DATE_TIME_FORMATTER));
+        sortie.setEndAt(end.format(DATE_TIME_FORMATTER));
+        sortie.setDurationHours(
+                BigDecimal.valueOf(seconds).divide(SECONDS_PER_HOUR, 4, RoundingMode.HALF_UP));
+    }
+
+    private String normalizeClockTime(String value) {
+        String normalized = value.trim();
+        if (normalized.matches("\\d{2}:\\d{2}")) {
+            return normalized + ":00";
+        }
+        return normalized;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        return value.trim();
+    }
+
+    /**
+     * 查询某单机的构型寿命实例。
+     */
+    public List<AircraftConfigItemLife> listLives(String aircraftNumber) {
+        if (trimToNull(aircraftNumber) == null) {
+            return Collections.emptyList();
+        }
+        return aircraftConfigItemLifeMapper.selectList(
+                Wrappers.<AircraftConfigItemLife>lambdaQuery()
+                        .eq(AircraftConfigItemLife::getAircraftNumber, aircraftNumber.trim())
+                        .orderByAsc(AircraftConfigItemLife::getItemId));
+    }
+
+    /**
+     * 为单机创建尚未存在的 EQUIPMENT 寿命实例。
+     */
+    @Transactional
+    public void ensureAircraftConfigLives(String aircraftNumber, String modelCode) {
+        Aircraft aircraft = aircraftConfigMapper.selectByAircraftNumberForUpdate(aircraftNumber);
+        if (aircraft == null) {
+            throw new IllegalArgumentException("单机不存在: " + aircraftNumber);
+        }
+        List<ConfigItem> equipmentItems = configItemMapper.selectList(
+                Wrappers.<ConfigItem>lambdaQuery()
+                        .eq(ConfigItem::getModelCode, modelCode)
+                        .eq(ConfigItem::getItemType, TRACKED_ITEM_TYPE)
+                        .orderByAsc(ConfigItem::getItemId));
+        if (equipmentItems.isEmpty()) {
+            return;
+        }
+        Set<Long> existingItemIds = listLives(aircraftNumber).stream()
+                .map(AircraftConfigItemLife::getItemId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        for (ConfigItem item : equipmentItems) {
+            if (existingItemIds.contains(item.getItemId())) {
+                continue;
+            }
+            if (item.getDefaultLifeHours() == null
+                    || item.getDefaultLifeHours().compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException(
+                        "构型零件“" + itemLabel(item) + "”未配置初始寿命");
+            }
+            AircraftConfigItemLife life = new AircraftConfigItemLife();
+            life.setAircraftNumber(aircraftNumber);
+            life.setItemId(item.getItemId());
+            life.setConfigVersion(aircraft.getConfigVersion());
+            life.setInitialLifeHours(
+                    item.getDefaultLifeHours().setScale(4, RoundingMode.HALF_UP));
+            life.setUsedLifeHours(BigDecimal.ZERO.setScale(4, RoundingMode.HALF_UP));
+            aircraftConfigItemLifeMapper.insert(life);
+        }
+    }
+
+    private void bindNewEquipmentToExistingAircraft(ConfigItem item) {
+        List<Aircraft> aircrafts = aircraftConfigMapper.selectList(
+                Wrappers.<Aircraft>lambdaQuery()
+                        .eq(Aircraft::getModelCode, item.getModelCode()));
+        for (Aircraft aircraft : orEmpty(aircrafts)) {
+            ensureAircraftConfigLives(aircraft.getAircraftNumber(), aircraft.getModelCode());
+        }
+    }
+
+    private void deductSortieLife(Sortie sortie) {
+        BigDecimal duration = sortie.getDurationHours();
+        if (duration == null || duration.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("架次时长无效，无法扣减寿命");
+        }
+        List<AircraftConfigItemLife> lives =
+                aircraftConfigItemLifeMapper.selectByAircraftNumberForUpdate(sortie.getAircraftNumber());
+        if (lives.isEmpty()) {
+            return;
+        }
+        ConfigItem item = null;
+        for (AircraftConfigItemLife life : lives) {
+            BigDecimal used = life.getUsedLifeHours() == null
+                    ? BigDecimal.ZERO : life.getUsedLifeHours();
+            BigDecimal initial = life.getInitialLifeHours() == null
+                    ? BigDecimal.ZERO : life.getInitialLifeHours();
+            BigDecimal remaining = initial.subtract(used);
+            if (remaining.compareTo(duration) < 0) {
+                item = configItemMapper.selectById(life.getItemId());
+                String label = item == null ? String.valueOf(life.getItemId()) : itemLabel(item);
+                throw new IllegalArgumentException(
+                        "构型零件“" + label + "”剩余寿命不足，需要 "
+                                + duration.stripTrailingZeros().toPlainString()
+                                + " 小时，剩余 "
+                                + remaining.max(BigDecimal.ZERO).stripTrailingZeros().toPlainString()
+                                + " 小时");
+            }
+            life.setUsedLifeHours(used.add(duration).setScale(4, RoundingMode.HALF_UP));
+            life.setUpdatedAt(LocalDateTime.now().format(DATE_TIME_FORMATTER));
+            aircraftConfigItemLifeMapper.updateById(life);
+
+            SortieLifeUsage usage = new SortieLifeUsage();
+            usage.setSortieId(sortie.getSortieId());
+            usage.setLifeId(life.getLifeId());
+            usage.setDeductedHours(duration);
+            sortieLifeUsageMapper.insert(usage);
+        }
+    }
+
+    private void restoreSortieLife(Long sortieId) {
+        List<SortieLifeUsage> usages = sortieLifeUsageMapper.selectList(
+                Wrappers.<SortieLifeUsage>lambdaQuery()
+                        .eq(SortieLifeUsage::getSortieId, sortieId));
+        for (SortieLifeUsage usage : usages) {
+            AircraftConfigItemLife life =
+                    aircraftConfigItemLifeMapper.selectByLifeIdForUpdate(usage.getLifeId());
+            if (life != null) {
+                BigDecimal used = life.getUsedLifeHours() == null
+                        ? BigDecimal.ZERO : life.getUsedLifeHours();
+                life.setUsedLifeHours(
+                        used.subtract(usage.getDeductedHours()).max(BigDecimal.ZERO)
+                                .setScale(4, RoundingMode.HALF_UP));
+                life.setUpdatedAt(LocalDateTime.now().format(DATE_TIME_FORMATTER));
+                aircraftConfigItemLifeMapper.updateById(life);
+            }
+            sortieLifeUsageMapper.deleteById(usage.getUsageId());
+        }
+    }
+
+    /**
+     * 单机全部 EQUIPMENT 的实际寿命。供故障预测页后续使用。
+     */
+    @Transactional
+    public List<Map<String, Object>> listAircraftConfigItemLives(String aircraftNumber) {
+        Aircraft aircraft = aircraftConfigMapper.selectById(aircraftNumber);
+        if (aircraft == null) {
+            throw new IllegalArgumentException("单机不存在: " + aircraftNumber);
+        }
+        ensureAircraftConfigLives(aircraftNumber, aircraft.getModelCode());
+        List<AircraftConfigItemLife> lives = listLives(aircraftNumber);
+        List<ConfigItem> allItems = configItemMapper.selectList(
+                Wrappers.<ConfigItem>lambdaQuery()
+                        .eq(ConfigItem::getModelCode, aircraft.getModelCode()));
+        Map<Long, ConfigItem> itemById = allItems.stream()
+                .filter(item -> item.getItemId() != null)
+                .collect(Collectors.toMap(ConfigItem::getItemId, item -> item));
+        List<Map<String, Object>> result = new ArrayList<>(lives.size());
+        for (AircraftConfigItemLife life : lives) {
+            ConfigItem item = configItemMapper.selectById(life.getItemId());
+            String systemName = item == null ? null : item.getSystemName();
+            String subSystemName = item == null ? null : item.getSubSystemName();
+            Long parentId = item == null ? null : item.getParentItemId();
+            Set<Long> visited = new HashSet<>();
+            while (parentId != null && visited.add(parentId)) {
+                ConfigItem parent = itemById.get(parentId);
+                if (parent == null) {
+                    break;
+                }
+                if (systemName == null && parent.getSystemName() != null) {
+                    systemName = parent.getSystemName();
+                }
+                if (subSystemName == null && parent.getSubSystemName() != null) {
+                    subSystemName = parent.getSubSystemName();
+                }
+                parentId = parent.getParentItemId();
+            }
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("lifeId", life.getLifeId());
+            row.put("aircraftNumber", life.getAircraftNumber());
+            row.put("itemId", life.getItemId());
+            row.put("configVersion", life.getConfigVersion());
+            row.put("equipmentName", item == null ? null : item.getEquipmentName());
+            row.put("partNumber", item == null ? null : item.getPartNumber());
+            row.put("systemName", systemName);
+            row.put("subSystemName", subSystemName);
+            row.put("initialLifeHours", life.getInitialLifeHours());
+            row.put("usedLifeHours", life.getUsedLifeHours());
+            row.put("remainingLifeHours", life.getRemainingLifeHours());
+            row.put("boundAt", life.getBoundAt());
+            row.put("updatedAt", life.getUpdatedAt());
+            result.add(row);
+        }
+        return result;
+    }
+
+    /**
+     * 机群寿命分布。单机整体寿命 = 全部 EQUIPMENT 剩余寿命之和 / 初始寿命之和。
+     */
+    public Map<String, Object> getFleetLifeOverview(String modelCode) {
+        String normalizedModel = trimToNull(modelCode);
+        List<Aircraft> planes = listLocalPlanes(normalizedModel);
+        Map<String, List<AircraftConfigItemLife>> livesByAircraft = new HashMap<>();
+        if (!planes.isEmpty()) {
+            List<String> aircraftNumbers = planes.stream()
+                    .map(Aircraft::getAircraftNumber)
+                    .filter(Objects::nonNull)
+                    .collect(Collectors.toList());
+            List<AircraftConfigItemLife> lives = aircraftConfigItemLifeMapper.selectList(
+                    Wrappers.<AircraftConfigItemLife>lambdaQuery()
+                            .in(AircraftConfigItemLife::getAircraftNumber, aircraftNumbers));
+            for (AircraftConfigItemLife life : orEmpty(lives)) {
+                livesByAircraft
+                        .computeIfAbsent(life.getAircraftNumber(), key -> new ArrayList<>())
+                        .add(life);
+            }
+        }
+
+        int normalCount = 0;
+        int warningCount = 0;
+        int criticalCount = 0;
+        int missingCount = 0;
+        BigDecimal totalInitial = BigDecimal.ZERO;
+        BigDecimal totalUsed = BigDecimal.ZERO;
+        BigDecimal totalRemaining = BigDecimal.ZERO;
+        List<Map<String, Object>> aircraftRows = new ArrayList<>();
+
+        for (Aircraft aircraft : planes) {
+            List<AircraftConfigItemLife> lives =
+                    livesByAircraft.getOrDefault(aircraft.getAircraftNumber(), Collections.emptyList());
+            BigDecimal initial = BigDecimal.ZERO;
+            BigDecimal used = BigDecimal.ZERO;
+            BigDecimal remaining = BigDecimal.ZERO;
+            int criticalEquipmentCount = 0;
+            for (AircraftConfigItemLife life : lives) {
+                BigDecimal itemInitial = life.getInitialLifeHours() == null
+                        ? BigDecimal.ZERO : life.getInitialLifeHours();
+                BigDecimal itemUsed = life.getUsedLifeHours() == null
+                        ? BigDecimal.ZERO : life.getUsedLifeHours();
+                BigDecimal itemRemaining = life.getRemainingLifeHours();
+                initial = initial.add(itemInitial);
+                used = used.add(itemUsed);
+                remaining = remaining.add(itemRemaining);
+                if (itemInitial.compareTo(BigDecimal.ZERO) > 0
+                        && itemRemaining.divide(itemInitial, 6, RoundingMode.HALF_UP)
+                        .compareTo(new BigDecimal("0.2")) < 0) {
+                    criticalEquipmentCount++;
+                }
+            }
+
+            double remainingRatio = initial.compareTo(BigDecimal.ZERO) > 0
+                    ? remaining.divide(initial, 6, RoundingMode.HALF_UP).doubleValue()
+                    : 0;
+            String status;
+            if (lives.isEmpty() || initial.compareTo(BigDecimal.ZERO) <= 0) {
+                status = "missing";
+                missingCount++;
+            } else if (remainingRatio >= 0.5) {
+                status = "normal";
+                normalCount++;
+            } else if (remainingRatio >= 0.2) {
+                status = "warning";
+                warningCount++;
+            } else {
+                status = "critical";
+                criticalCount++;
+            }
+
+            totalInitial = totalInitial.add(initial);
+            totalUsed = totalUsed.add(used);
+            totalRemaining = totalRemaining.add(remaining);
+
+            Map<String, Object> row = new LinkedHashMap<>();
+            row.put("aircraftNumber", aircraft.getAircraftNumber());
+            row.put("modelCode", aircraft.getModelCode());
+            row.put("configVersion", aircraft.getConfigVersion());
+            row.put("equipmentCount", lives.size());
+            row.put("criticalEquipmentCount", criticalEquipmentCount);
+            row.put("initialLifeHours", initial);
+            row.put("usedLifeHours", used);
+            row.put("remainingLifeHours", remaining);
+            row.put("remainingRatio", remainingRatio);
+            row.put("status", status);
+            aircraftRows.add(row);
+        }
+        aircraftRows.sort(Comparator.comparingDouble(
+                row -> ((Number) row.get("remainingRatio")).doubleValue()));
+
+        double fleetRemainingRatio = totalInitial.compareTo(BigDecimal.ZERO) > 0
+                ? totalRemaining.divide(totalInitial, 6, RoundingMode.HALF_UP).doubleValue()
+                : 0;
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("aircraftCount", planes.size());
+        summary.put("configuredAircraftCount", planes.size() - missingCount);
+        summary.put("normalAircraftCount", normalCount);
+        summary.put("warningAircraftCount", warningCount);
+        summary.put("criticalAircraftCount", criticalCount);
+        summary.put("missingAircraftCount", missingCount);
+        summary.put("equipmentCount", livesByAircraft.values().stream()
+                .mapToInt(List::size).sum());
+        summary.put("initialLifeHours", totalInitial);
+        summary.put("usedLifeHours", totalUsed);
+        summary.put("remainingLifeHours", totalRemaining);
+        summary.put("remainingRatio", fleetRemainingRatio);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("summary", summary);
+        result.put("aircraft", aircraftRows);
+        return result;
+    }
+
+    @Transactional
+    public void updateEquipmentLife(Long itemId, BigDecimal defaultLifeHours) {
+        ConfigItem item = configItemMapper.selectById(itemId);
+        if (item == null) {
+            throw new IllegalArgumentException("构型项目不存在: " + itemId);
+        }
+        if (!TRACKED_ITEM_TYPE.equalsIgnoreCase(item.getItemType())) {
+            throw new IllegalArgumentException("只有 EQUIPMENT 支持配置初始寿命");
+        }
+        if (defaultLifeHours == null || defaultLifeHours.compareTo(BigDecimal.ZERO) <= 0) {
+            throw new IllegalArgumentException("初始寿命必须大于 0 小时");
+        }
+        item.setDefaultLifeHours(defaultLifeHours.setScale(4, RoundingMode.HALF_UP));
+        configItemMapper.updateById(item);
+    }
+
+    private String itemLabel(ConfigItem item) {
+        if (item == null) {
+            return "未知零件";
+        }
+        if (item.getEquipmentName() != null && !item.getEquipmentName().trim().isEmpty()) {
+            return item.getEquipmentName().trim();
+        }
+        if (item.getPartNumber() != null && !item.getPartNumber().trim().isEmpty()) {
+            return item.getPartNumber().trim();
+        }
+        return String.valueOf(item.getItemId());
     }
 
     public List<ConfigDataMapping> listMappingsBySortie(Long sortieId) {

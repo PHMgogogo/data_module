@@ -31,6 +31,8 @@ public class SchemaInitializer {
         createConfigItemTable();
         createConfigDataMappingTable();
         createSortieTable();
+        createAircraftConfigItemLifeTable();
+        createSortieLifeUsageTable();
         createExternalPlatformTable();
         log.info("=== 飞机构型相关表结构初始化完成 ===");
     }
@@ -81,9 +83,11 @@ public class SchemaInitializer {
                 + "equipment_name VARCHAR(200), "
                 + "part_number VARCHAR(100), "
                 + "item_type VARCHAR(20), "
+                + "default_life_hours DECIMAL(14,4), "
                 + "PRIMARY KEY (item_id)"
                 + ")";
         jdbcTemplate.execute(sql);
+        addColumnQuietly("config_item", "default_life_hours", "DECIMAL(14,4)");
         log.info("表 config_item 已就绪");
     }
 
@@ -94,6 +98,7 @@ public class SchemaInitializer {
         String sql = "CREATE TABLE IF NOT EXISTS config_data_mapping ("
                 + "mapping_id INT IDENTITY(1,1) NOT NULL, "
                 + "aircraft_number VARCHAR(20), "
+                + "item_id INT, "
                 + "sortie_id INT, "
                 + "csv_table_name VARCHAR(200), "
                 + "data_type VARCHAR(50) DEFAULT 'RAW', "
@@ -102,6 +107,7 @@ public class SchemaInitializer {
                 + "PRIMARY KEY (mapping_id)"
                 + ")";
         jdbcTemplate.execute(sql);
+        addColumnQuietly("config_data_mapping", "item_id", "INT");
         // 本地架次与 CSV 表严格一对一。已有历史重复数据时索引创建失败，不影响应用启动。
         createUniqueIndexQuietly("uk_cdm_sortie",
                 "CREATE UNIQUE INDEX IF NOT EXISTS uk_cdm_sortie "
@@ -131,10 +137,78 @@ public class SchemaInitializer {
                 + "flight_date VARCHAR(20), "
                 + "start_time VARCHAR(20), "
                 + "end_time VARCHAR(20), "
+                + "start_at DATETIME, "
+                + "end_at DATETIME, "
+                + "duration_hours DECIMAL(14,4), "
                 + "PRIMARY KEY (sortie_id)"
                 + ")";
         jdbcTemplate.execute(sql);
+        addColumnQuietly("sortie", "start_at", "DATETIME");
+        addColumnQuietly("sortie", "end_at", "DATETIME");
+        addColumnQuietly("sortie", "duration_hours", "DECIMAL(14,4)");
         log.info("表 sortie 已就绪");
+    }
+
+    /**
+     * 单机构型寿命实例表：每个单机、每个 EQUIPMENT 各一条。
+     */
+    private void createAircraftConfigItemLifeTable() {
+        String sql = "CREATE TABLE IF NOT EXISTS aircraft_config_item_life ("
+                + "life_id BIGINT IDENTITY(1,1) NOT NULL, "
+                + "aircraft_number VARCHAR(20) NOT NULL, "
+                + "item_id INT NOT NULL, "
+                + "config_version VARCHAR(20), "
+                + "initial_life_hours DECIMAL(14,4) NOT NULL, "
+                + "used_life_hours DECIMAL(14,4) DEFAULT 0 NOT NULL, "
+                + "bound_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                + "updated_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                + "PRIMARY KEY (life_id)"
+                + ")";
+        jdbcTemplate.execute(sql);
+        createUniqueIndexQuietly("uk_acil_aircraft_item",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uk_acil_aircraft_item "
+                        + "ON aircraft_config_item_life(aircraft_number, item_id)");
+        createIndexQuietly("idx_acil_item",
+                "CREATE INDEX IF NOT EXISTS idx_acil_item ON aircraft_config_item_life(item_id)");
+        log.info("表 aircraft_config_item_life 已就绪");
+    }
+
+    /**
+     * 架次寿命扣减流水：新增架次时每个寿命实例一条，删除架次时据此恢复。
+     */
+    private void createSortieLifeUsageTable() {
+        String sql = "CREATE TABLE IF NOT EXISTS sortie_life_usage ("
+                + "usage_id BIGINT IDENTITY(1,1) NOT NULL, "
+                + "sortie_id INT NOT NULL, "
+                + "life_id BIGINT NOT NULL, "
+                + "deducted_hours DECIMAL(14,4) NOT NULL, "
+                + "created_at DATETIME DEFAULT CURRENT_TIMESTAMP NOT NULL, "
+                + "PRIMARY KEY (usage_id)"
+                + ")";
+        jdbcTemplate.execute(sql);
+        createUniqueIndexQuietly("uk_slu_sortie_life",
+                "CREATE UNIQUE INDEX IF NOT EXISTS uk_slu_sortie_life "
+                        + "ON sortie_life_usage(sortie_id, life_id)");
+        createIndexQuietly("idx_slu_life",
+                "CREATE INDEX IF NOT EXISTS idx_slu_life ON sortie_life_usage(life_id)");
+        log.info("表 sortie_life_usage 已就绪");
+    }
+
+    private void addColumnQuietly(String table, String column, String definition) {
+        try {
+            jdbcTemplate.execute("ALTER TABLE " + table + " ADD " + column + " " + definition);
+            log.info("表 {} 新增字段 {}", table, column);
+        } catch (Exception ignored) {
+            // 字段已存在
+        }
+    }
+
+    private void createIndexQuietly(String name, String sql) {
+        try {
+            jdbcTemplate.execute(sql);
+        } catch (Exception e) {
+            log.warn("索引 {} 创建失败: {}", name, e.getMessage());
+        }
     }
 
     /**

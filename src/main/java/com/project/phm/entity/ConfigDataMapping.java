@@ -15,6 +15,7 @@ public class ConfigDataMapping {
     @TableId(type = IdType.AUTO)
     private Long mappingId;         // PK, 自增
     private String aircraftNumber;
+    private Long itemId;
     private Long sortieId;          // 本地架次ID → Sortie
     private String csvTableName;    // 关联的 csv_xxx 表名
     private String dataTime;        // 数据时间
@@ -34,6 +35,14 @@ public class ConfigDataMapping {
 
     public void setAircraftNumber(String aircraftNumber) {
         this.aircraftNumber = aircraftNumber;
+    }
+
+    public Long getItemId() {
+        return itemId;
+    }
+
+    public void setItemId(Long itemId) {
+        this.itemId = itemId;
     }
 
     public Long getSortieId() {

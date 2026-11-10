@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.math.BigDecimal;
+
 /**
  * 架次 — 单次飞行任务（起飞到降落）
  *
@@ -34,6 +36,15 @@ public class Sortie {
 
     @Schema(description = "结束时间", example = "14:20:00")
     private String endTime;
+
+    @Schema(description = "完整开始时间", example = "2026-07-23 10:30:00")
+    private String startAt;
+
+    @Schema(description = "完整结束时间", example = "2026-07-23 14:20:00")
+    private String endAt;
+
+    @Schema(description = "架次时长（小时）", example = "3.8333")
+    private BigDecimal durationHours;
 
     /**
      * 参数组ID — 仅航新行有值，用于查该架次的参数字段名。
@@ -72,6 +83,15 @@ public class Sortie {
 
     public String getEndTime() { return endTime; }
     public void setEndTime(String endTime) { this.endTime = endTime; }
+
+    public String getStartAt() { return startAt; }
+    public void setStartAt(String startAt) { this.startAt = startAt; }
+
+    public String getEndAt() { return endAt; }
+    public void setEndAt(String endAt) { this.endAt = endAt; }
+
+    public BigDecimal getDurationHours() { return durationHours; }
+    public void setDurationHours(BigDecimal durationHours) { this.durationHours = durationHours; }
 
     public String getParameterGroupId() { return parameterGroupId; }
     public void setParameterGroupId(String parameterGroupId) { this.parameterGroupId = parameterGroupId; }

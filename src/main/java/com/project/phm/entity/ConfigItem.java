@@ -6,6 +6,8 @@ import com.baomidou.mybatisplus.annotation.TableName;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.swagger.v3.oas.annotations.media.Schema;
 
+import java.math.BigDecimal;
+
 /**
  * 构型项目 — 系统/设备，按ATA章节组织的树形结构
  *
@@ -47,6 +49,9 @@ public class ConfigItem {
     @Schema(description = "项目类型：SYSTEM/SUBSYSTEM/EQUIPMENT/LRU", example = "SYSTEM", 
             allowableValues = {"SYSTEM", "SUBSYSTEM", "EQUIPMENT", "LRU"}, required = true)
     private String itemType;        // 类型: SYSTEM / SUBSYSTEM / EQUIPMENT / LRU
+
+    @Schema(description = "EQUIPMENT 初始寿命（小时）", example = "12000.0000")
+    private BigDecimal defaultLifeHours;
 
     public Long getItemId() {
         return itemId;
@@ -118,5 +123,13 @@ public class ConfigItem {
 
     public void setItemType(String itemType) {
         this.itemType = itemType;
+    }
+
+    public BigDecimal getDefaultLifeHours() {
+        return defaultLifeHours;
+    }
+
+    public void setDefaultLifeHours(BigDecimal defaultLifeHours) {
+        this.defaultLifeHours = defaultLifeHours;
     }
 }

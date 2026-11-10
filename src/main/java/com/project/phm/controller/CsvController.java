@@ -119,7 +119,7 @@ public class CsvController {
                     "- 计算原始数据的SHA-256哈希（用于后续导出一致性校验）\n" +
                     "- 保存到元数据表 csv_table_metadata\n" +
                     "- 绑定到本地架次；一个架次只能绑定一张表，一张表只能绑定一个架次\n\n" +
-                    "**注意**：表名会自动加 `csv_` 前缀（如传 `engine` 会变成 `csv_engine`）\n" +
+                    "**注意**：表名会自动加 `csv_` 前缀并移除 `.csv` 后缀（如传 `engine.csv` 会变成 `csv_engine`）\n" +
                     "**注意**：如果表名已存在，会报错防止重复上传")
     @Tag(name = "05-CSV数据管理")
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)

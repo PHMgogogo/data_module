@@ -9,9 +9,11 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 飞机构型控制器 — 机型/单机/构型项目管理 + 健康记录查询
@@ -154,13 +156,22 @@ public class AircraftController {
     }
 
     @Operation(summary = "删除飞机单机",
-            description = "根据机号删除指定的飞机单机。")
+            description = "根据机号删除指定的飞机单机，并级联删除其全部架次、CSV数据表、寿命流水和单机寿命实例。")
     @Tag(name = "02-飞机单机管理")
     @DeleteMapping("/plane/{aircraftNumber}")
     public ResponseEntity<?> deletePlane(@Parameter(description = "机号", required = true, example = "B-1234")
                                            @PathVariable("aircraftNumber") String aircraftNumber) {
         try {
+            List<Sortie> sorties = configService.listLocalSorties(aircraftNumber);
+            List<ConfigDataMapping> mappingsToDrop = new java.util.ArrayList<>();
+            for (Sortie sortie : sorties) {
+                if (sortie == null || sortie.getSortieId() == null) {
+                    continue;
+                }
+                mappingsToDrop.addAll(configService.listMappingsBySortie(sortie.getSortieId()));
+            }
             configService.removePlane(aircraftNumber);
+            dropMappedTables(mappingsToDrop);
             return ResponseEntity.ok(successMap("单机删除成功"));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
@@ -267,7 +278,8 @@ public class AircraftController {
                     "  \"gjbChapter\": \"72-50\",\n" +
                     "  \"equipmentName\": \"振动传感器\",\n" +
                     "  \"partNumber\": \"P/N 12345\",\n" +
-                    "  \"itemType\": \"EQUIPMENT\"\n" +
+                    "  \"itemType\": \"EQUIPMENT\",\n" +
+                    "  \"defaultLifeHours\": 12000\n" +
                     "}\n" +
                     "```")
     @Tag(name = "03-构型项目管理")
@@ -301,6 +313,57 @@ public class AircraftController {
         }
     }
 
+    @Operation(summary = "修改 EQUIPMENT 初始寿命",
+            description = "只允许修改 EQUIPMENT 的默认初始寿命（小时）。已绑定的单机寿命实例不会被追溯修改。")
+    @Tag(name = "03-构型项目管理")
+    @PutMapping("/config-items/{itemId}/life")
+    public ResponseEntity<?> updateEquipmentLife(
+            @PathVariable("itemId") Long itemId,
+            @RequestBody Map<String, Object> body) {
+        try {
+            Object raw = body == null ? null : body.get("defaultLifeHours");
+            if (raw == null) {
+                throw new IllegalArgumentException("defaultLifeHours 不能为空");
+            }
+            configService.updateEquipmentLife(itemId, new BigDecimal(raw.toString()));
+            return ResponseEntity.ok(successMap("初始寿命修改成功"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("修改初始寿命失败: " + e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "查询单机构型实际寿命",
+            description = "返回某单机所有 EQUIPMENT 的初始寿命、已用寿命和剩余寿命，供故障预测等页面使用。")
+    @Tag(name = "03-构型项目管理")
+    @GetMapping("/config-item-lives")
+    public ResponseEntity<?> listAircraftConfigItemLives(
+            @Parameter(description = "机号", required = true, example = "20011")
+            @RequestParam("aircraftNumber") String aircraftNumber) {
+        try {
+            return ResponseEntity.ok(configService.listAircraftConfigItemLives(aircraftNumber));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("查询单机构型寿命失败: " + e.getMessage()));
+        }
+    }
+
+    @Operation(summary = "查询机群寿命分布",
+            description = "按单机汇总全部 EQUIPMENT 的加权平均剩余寿命，并返回机群状态分布。modelCode 可选。")
+    @Tag(name = "03-构型项目管理")
+    @GetMapping("/config-item-life-overview")
+    public ResponseEntity<?> getFleetLifeOverview(
+            @Parameter(description = "机型代码，可选", example = "JX-20A")
+            @RequestParam(value = "modelCode", required = false) String modelCode) {
+        try {
+            return ResponseEntity.ok(configService.getFleetLifeOverview(modelCode));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(errorMap("查询机群寿命分布失败: " + e.getMessage()));
+        }
+    }
+
     // ==================== 数据关联查询 ====================
 
     @Operation(summary = "查询CSV数据与构型的关联",
@@ -308,10 +371,19 @@ public class AircraftController {
     @Tag(name = "03-构型项目管理")
     @GetMapping("/mappings")
     public ResponseEntity<?> listMappings(
-            @Parameter(description = "本地架次ID", example = "1", required = true)
-            @RequestParam(value = "sortieId") Long sortieId) {
+            @Parameter(description = "本地架次ID", example = "1")
+            @RequestParam(value = "sortieId", required = false) Long sortieId,
+            @Parameter(description = "构型项目ID", example = "3")
+            @RequestParam(value = "itemId", required = false) Long itemId) {
         try {
-            return ResponseEntity.ok(configService.listMappingsBySortie(sortieId));
+            if (sortieId == null && itemId == null) {
+                throw new IllegalArgumentException("sortieId 和 itemId 至少提供一个");
+            }
+            return ResponseEntity.ok(sortieId != null
+                    ? configService.listMappingsBySortie(sortieId)
+                    : configService.listMappingsByItemId(itemId));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(500).body(errorMap("查询关联数据失败: " + e.getMessage()));
         }
@@ -416,24 +488,30 @@ public class AircraftController {
     public ResponseEntity<?> deleteSortie(@Parameter(description = "架次ID", required = true, example = "1")
                                            @PathVariable("sortieId") Long sortieId) {
         try {
-            // 1. 查出该架次关联的所有 csv_xxx 表，逐个删除
-            java.util.List<ConfigDataMapping> mappings = configService.listMappingsBySortie(sortieId);
-            for (ConfigDataMapping m : mappings) {
-                String tableName = "csv_" + m.getCsvTableName();
-                // 表可能已被手动删除，容错处理
-                try {
-                    csvService.dropTable(tableName);
-                } catch (IllegalArgumentException e) {
-                    // 表不存在则跳过
-                }
-            }
-            // 2. 删除架次及剩余关联记录
+            List<ConfigDataMapping> mappings = configService.listMappingsBySortie(sortieId);
             configService.removeSortie(sortieId);
+            dropMappedTables(mappings);
             return ResponseEntity.ok(successMap("架次删除成功"));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(errorMap(e.getMessage()));
         } catch (Exception e) {
             return ResponseEntity.status(500).body(errorMap("删除架次失败: " + e.getMessage()));
+        }
+    }
+
+    private void dropMappedTables(List<ConfigDataMapping> mappings) {
+        Set<String> tableNames = new java.util.LinkedHashSet<>();
+        for (ConfigDataMapping mapping : mappings) {
+            if (mapping != null && mapping.getCsvTableName() != null) {
+                tableNames.add("csv_" + mapping.getCsvTableName());
+            }
+        }
+        for (String tableName : tableNames) {
+            try {
+                csvService.dropTable(tableName);
+            } catch (Exception ignored) {
+                // 数据库关联已经删除完毕；物理表残留不影响业务一致性，可后续清理
+            }
         }
     }
 

@@ -1,11 +1,17 @@
 package com.project.phm.utils;
 
 import java.util.List;
+import java.util.Locale;
+import java.util.regex.Pattern;
 
 /**
  * CSV工具类，用于列名与表名处理
  */
 public class CsvUtils {
+
+    private static final Pattern TABLE_NAME_PATTERN = Pattern.compile(
+            "^csv_[\\p{L}\\p{N}_]+$",
+            Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE);
 
     /**
      * 判断列名是否为时间戳列。
@@ -66,11 +72,41 @@ public class CsvUtils {
     }
 
     /**
-     * 验证表名是否以csv_开头（不区分大小写）
+     * 将用户输入规范化为数据库表名。
+     *
+     * <p>允许用户传文件名（如 {@code 2026_afd_data.csv}）或完整表名
+     * （如 {@code csv_2026_afd_data.csv}），统一生成
+     * {@code csv_2026_afd_data}。</p>
+     *
+     * @param tableName 用户输入的表名
+     * @return 带 csv_ 前缀的合法表名
+     */
+    public static String normalizeTableName(String tableName) {
+        String value = tableName == null ? "" : tableName.trim();
+        if (value.regionMatches(true, 0, "csv_", 0, 4)) {
+            value = value.substring(4).trim();
+        }
+        if (value.toLowerCase(Locale.ROOT).endsWith(".csv")) {
+            value = value.substring(0, value.length() - 4).trim();
+        }
+        if (value.isEmpty()) {
+            throw new IllegalArgumentException("表名不能为空");
+        }
+
+        String fullTableName = "csv_" + value;
+        if (!isValidTableName(fullTableName)) {
+            throw new IllegalArgumentException("表名只能包含字母、数字和下划线");
+        }
+        return fullTableName;
+    }
+
+    /**
+     * 验证表名是否为合法的 csv_ 表标识符。
+     *
      * @param tableName 表名
      * @return 是否合法
      */
     public static boolean isValidTableName(String tableName) {
-        return tableName != null && tableName.toLowerCase().startsWith("csv_");
+        return tableName != null && TABLE_NAME_PATTERN.matcher(tableName).matches();
     }
 }
